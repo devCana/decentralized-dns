@@ -54,13 +54,14 @@ func toRecordJSON(r chain.Record) *recordJSON {
 // "no match" (found=false, error=no_match) with HTTP 200: like NXDOMAIN it
 // is a successful, authoritative denial.
 type resolveResponse struct {
-	Query  queryJSON   `json:"query"`
-	Found  bool        `json:"found"`
-	Error  string      `json:"error,omitempty"`
-	Record *recordJSON `json:"record,omitempty"`
-	Owner  string      `json:"owner,omitempty"`
-	PubKey string      `json:"pubKey,omitempty"`
-	Cached bool        `json:"cached"`
+	Query            queryJSON   `json:"query"`
+	Found            bool        `json:"found"`
+	Error            string      `json:"error,omitempty"`
+	Record           *recordJSON `json:"record,omitempty"`
+	Owner            string      `json:"owner,omitempty"`
+	PubKey           string      `json:"pubKey,omitempty"`
+	OwnerSigVerified bool        `json:"ownerSigVerified"`
+	Cached           bool        `json:"cached"`
 }
 
 type domainResponse struct {
@@ -86,6 +87,17 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 
 func writeError(w http.ResponseWriter, status int, code, msg string) {
 	writeJSON(w, status, errorBody{Error: code, Message: msg})
+}
+
+// writeSigned wraps v in a resolver-signed envelope (HLD §3.3: every
+// response is signed by the resolver's ed25519 identity).
+func (s *Server) writeSigned(w http.ResponseWriter, status int, v any) {
+	env, err := s.identity.SealEnvelope(v)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "sign_error", err.Error())
+		return
+	}
+	writeJSON(w, status, env)
 }
 
 // rateLimited wraps a handler with the per-IP limiter.
@@ -150,14 +162,15 @@ func (s *Server) handleResolve(w http.ResponseWriter, r *http.Request) {
 	}
 	if !res.Found() {
 		resp.Error = "no_match"
-		writeJSON(w, http.StatusOK, resp)
+		s.writeSigned(w, http.StatusOK, resp)
 		return
 	}
 	resp.Found = true
 	resp.Record = toRecordJSON(res.Result.Record)
 	resp.Owner = res.Result.Owner.Hex()
 	resp.PubKey = hexutil.Encode(res.Result.PubKey)
-	writeJSON(w, http.StatusOK, resp)
+	resp.OwnerSigVerified = res.Result.OwnerSigValid
+	s.writeSigned(w, http.StatusOK, resp)
 }
 
 // handleDomain serves GET /domains/{name}: raw domain state + live records.
@@ -199,7 +212,7 @@ func (s *Server) handleDomain(w http.ResponseWriter, r *http.Request) {
 			resp.Records = append(resp.Records, toRecordJSON(rec))
 		}
 	}
-	writeJSON(w, http.StatusOK, resp)
+	s.writeSigned(w, http.StatusOK, resp)
 }
 
 // handleTypes serves GET /types: all declared record types.
@@ -212,5 +225,5 @@ func (s *Server) handleTypes(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadGateway, "chain_error", err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string][]string{"types": types})
+	s.writeSigned(w, http.StatusOK, map[string][]string{"types": types})
 }

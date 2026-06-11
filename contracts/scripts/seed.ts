@@ -1,6 +1,7 @@
 import { ethers, network } from "hardhat";
 import * as fs from "fs";
 import * as path from "path";
+import { signRecord } from "./recordSig";
 
 /**
  * Seeds a freshly deployed local chain with demo data used by resolver
@@ -10,59 +11,54 @@ import * as path from "path";
  * Reads contract addresses from deployments/<network>.json (run deploy.ts
  * first). Signs records with the second hardhat account (alice).
  */
+const ALICE_PK = "0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d"; // hardhat account #1
+
 async function main() {
   const file = path.join(__dirname, "..", "deployments", `${network.name}.json`);
   const { contracts } = JSON.parse(fs.readFileSync(file, "utf8"));
   const [, alice] = await ethers.getSigners();
+  const aliceWallet = new ethers.Wallet(ALICE_PK);
 
   const dapp = await ethers.getContractAt("NamespaceDApp", contracts.NamespaceDApp);
 
   const price = await dapp.priceOf("example");
   // alice's uncompressed secp256k1 public key as the on-chain pubKey
-  const pubKey = ethers.SigningKey.computePublicKey(
-    "0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d", // hardhat account #1
-    false
-  );
+  const pubKey = ethers.SigningKey.computePublicKey(ALICE_PK, false);
   await (await dapp.connect(alice).register("example", pubKey, { value: price })).wait();
   console.log("registered 'example' for", alice.address);
 
-  const sig = "0x" + "ab".repeat(65); // placeholder until the PKI pipeline (issue #7)
   const zero = ethers.ZeroHash;
+  const set = async (
+    recordType: string,
+    selector: string,
+    fieldNames: string[],
+    fieldValues: string[],
+    ttl: number
+  ) => {
+    const sig = await signRecord(aliceWallet, "example", recordType, selector, ttl, fieldNames, fieldValues);
+    await (
+      await dapp
+        .connect(alice)
+        .setRecord("example", recordType, selector, fieldNames, fieldValues, ttl, sig, zero)
+    ).wait();
+  };
 
-  await (
-    await dapp
-      .connect(alice)
-      .setRecord("example", "A", "", ["address"], ["93.184.216.34"], 3600, sig, zero)
-  ).wait();
-  await (
-    await dapp
-      .connect(alice)
-      .setRecord(
-        "example",
-        "SVC",
-        "port=25&service=SMTP&transport=TCP",
-        ["target", "service", "transport", "port"],
-        ["mail.example", "SMTP", "TCP", "25"],
-        300,
-        sig,
-        zero
-      )
-  ).wait();
-  await (
-    await dapp
-      .connect(alice)
-      .setRecord(
-        "example",
-        "SVC",
-        "port=443&service=HTTP&transport=QUIC",
-        ["target", "service", "transport", "port"],
-        ["web.example", "HTTP", "QUIC", "443"],
-        300,
-        sig,
-        zero
-      )
-  ).wait();
-  console.log("seeded A + 2 SVC records for 'example'");
+  await set("A", "", ["address"], ["93.184.216.34"], 3600);
+  await set(
+    "SVC",
+    "port=25&service=SMTP&transport=TCP",
+    ["target", "service", "transport", "port"],
+    ["mail.example", "SMTP", "TCP", "25"],
+    300
+  );
+  await set(
+    "SVC",
+    "port=443&service=HTTP&transport=QUIC",
+    ["target", "service", "transport", "port"],
+    ["web.example", "HTTP", "QUIC", "443"],
+    300
+  );
+  console.log("seeded A + 2 SVC records for 'example' (owner-signed)");
 }
 
 main().catch((err) => {

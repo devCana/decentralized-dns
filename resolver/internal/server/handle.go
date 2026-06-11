@@ -8,6 +8,7 @@ import (
 
 	"github.com/devCana/decentralized-dns/resolver/internal/cache"
 	"github.com/devCana/decentralized-dns/resolver/internal/chain"
+	"github.com/devCana/decentralized-dns/resolver/internal/pki"
 	"github.com/devCana/decentralized-dns/resolver/internal/query"
 )
 
@@ -29,8 +30,10 @@ type QueryResult struct {
 
 // HandleQuery is the single resolution path shared by the REST and UDP
 // front ends (HLD §4.1.2): read-through cache -> chain, caching positive
-// answers for the record's on-chain TTL. Misses are not negatively cached
-// so new records become visible immediately.
+// answers for the record's on-chain TTL. Owner signatures are verified
+// once at cache-fill time (UC-5) and the verdict cached with the entry.
+// Misses are not negatively cached so new records become visible
+// immediately.
 func (s *Server) HandleQuery(ctx context.Context, q query.Query) (*QueryResult, error) {
 	key := cache.Key{Name: q.Name, Type: q.Type, Selector: q.Selector}
 	if res, ok := s.cache.Get(key); ok {
@@ -40,8 +43,15 @@ func (s *Server) HandleQuery(ctx context.Context, q query.Query) (*QueryResult, 
 	if err != nil {
 		return nil, err
 	}
-	if res.Record.Exists && res.Record.TTL > 0 {
-		s.cache.Set(key, res, time.Duration(res.Record.TTL)*time.Second)
+	if res.Record.Exists {
+		if err := pki.VerifyOwnerSig(q.Name, res.Record, res.Owner, res.PubKey); err != nil {
+			s.log.Warn("owner signature failed", "name", q.Name, "type", q.Type, "err", err)
+		} else {
+			res.OwnerSigValid = true
+		}
+		if res.Record.TTL > 0 {
+			s.cache.Set(key, res, time.Duration(res.Record.TTL)*time.Second)
+		}
 	}
 	return &QueryResult{Result: res}, nil
 }

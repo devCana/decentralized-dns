@@ -40,6 +40,9 @@ type ResolveResult struct {
 	Record Record         `json:"record"`
 	Owner  common.Address `json:"owner"`
 	PubKey []byte         `json:"pubKey"`
+	// OwnerSigValid is set by the resolver at cache-fill time (UC-5):
+	// whether Record.OwnerSig verifies against Owner/PubKey.
+	OwnerSigValid bool `json:"ownerSigValid"`
 }
 
 // Domain mirrors NamespaceDApp.getDomain.

@@ -6,13 +6,16 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"testing"
 
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/crypto"
 
 	"github.com/devCana/decentralized-dns/resolver/internal/cache"
 	"github.com/devCana/decentralized-dns/resolver/internal/chain"
 	"github.com/devCana/decentralized-dns/resolver/internal/config"
+	"github.com/devCana/decentralized-dns/resolver/internal/pki"
 )
 
 // fakeChain is an in-memory ChainReader for handler tests.
@@ -24,12 +27,12 @@ type fakeChain struct {
 	types        []string
 }
 
-func key(name, typ, sel string) string { return name + "|" + typ + "|" + sel }
+func key2(name, typ, sel string) string { return name + "|" + typ + "|" + sel }
 
 func (f *fakeChain) Resolve(_ context.Context, name, recordType, selector string) (*chain.ResolveResult, error) {
 	f.resolveCalls++
 	f.lastSelector = selector
-	if res, ok := f.records[key(name, recordType, selector)]; ok {
+	if res, ok := f.records[key2(name, recordType, selector)]; ok {
 		return &res, nil
 	}
 	return &chain.ResolveResult{}, nil // exists=false, zero owner
@@ -54,25 +57,49 @@ func (f *fakeChain) ChainHead(_ context.Context) (uint64, error) { return 7, nil
 
 var owner = common.HexToAddress("0x70997970C51812dc3A010C7d01b50e0d17dc79C8")
 
-func seededFake() *fakeChain {
+func seededFake(t *testing.T) *fakeChain {
+	t.Helper()
+	key, err := crypto.GenerateKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ownerAddr := crypto.PubkeyToAddress(key.PublicKey)
+	pubKey := crypto.FromECDSAPub(&key.PublicKey)
+	owner = ownerAddr
+
 	rec := chain.Record{
 		Type: "A", Selector: "", FieldNames: []string{"address"},
-		FieldVals: []string{"93.184.216.34"}, TTL: 3600, Generation: 1,
-		OwnerSig: []byte{0xab}, Exists: true,
+		FieldVals: []string{"93.184.216.34"}, TTL: 3600, Generation: 1, Exists: true,
+	}
+	if rec.OwnerSig, err = pki.SignRecord("example", rec, key); err != nil {
+		t.Fatal(err)
 	}
 	svc := chain.Record{
 		Type: "SVC", Selector: "port=443&service=HTTP&transport=QUIC",
 		FieldNames: []string{"target", "service", "transport", "port"},
 		FieldVals:  []string{"web.example", "HTTP", "QUIC", "443"},
-		TTL:        600, Generation: 1, OwnerSig: []byte{0xcd}, Exists: true,
+		TTL:        600, Generation: 1, Exists: true,
+	}
+	if svc.OwnerSig, err = pki.SignRecord("example", svc, key); err != nil {
+		t.Fatal(err)
+	}
+	// forged record: valid shape, signature from a different key
+	forged := chain.Record{
+		Type: "MX", Selector: "zone=forged", FieldNames: []string{"host", "priority"},
+		FieldVals: []string{"evil.example", "10"}, TTL: 60, Generation: 1, Exists: true,
+	}
+	attacker, _ := crypto.GenerateKey()
+	if forged.OwnerSig, err = pki.SignRecord("example", forged, attacker); err != nil {
+		t.Fatal(err)
 	}
 	return &fakeChain{
 		records: map[string]chain.ResolveResult{
-			key("example", "A", ""):             {Record: rec, Owner: owner, PubKey: []byte{0x04, 0x01}},
-			key("example", "SVC", svc.Selector): {Record: svc, Owner: owner, PubKey: []byte{0x04, 0x01}},
+			key2("example", "A", ""):             {Record: rec, Owner: ownerAddr, PubKey: pubKey},
+			key2("example", "SVC", svc.Selector): {Record: svc, Owner: ownerAddr, PubKey: pubKey},
+			key2("example", "MX", "zone=forged"): {Record: forged, Owner: ownerAddr, PubKey: pubKey},
 		},
 		domains: map[string]chain.Domain{
-			"example": {Owner: owner, PubKey: []byte{0x04, 0x01}, Expiry: 1<<62 - 1, Generation: 1},
+			"example": {Owner: ownerAddr, PubKey: pubKey, Expiry: 1<<62 - 1, Generation: 1},
 		},
 		types: []string{"A", "AAAA", "MX", "SVC", "ResourceRef"},
 	}
@@ -84,31 +111,58 @@ func newTestServer(t *testing.T, fc ChainReader, rps, burst int) *Server {
 	if err != nil {
 		t.Fatal(err)
 	}
+	id, err := pki.LoadOrCreateIdentity(filepath.Join(t.TempDir(), "resolver.key"))
+	if err != nil {
+		t.Fatal(err)
+	}
 	s := &Server{
-		cfg:   &config.Config{RateRPS: rps, RateBurst: burst},
-		log:   slog.New(slog.DiscardHandler),
-		chain: fc,
-		cache: c,
-		mux:   http.NewServeMux(),
+		cfg:      &config.Config{RateRPS: rps, RateBurst: burst},
+		log:      slog.New(slog.DiscardHandler),
+		chain:    fc,
+		cache:    c,
+		identity: id,
+		mux:      http.NewServeMux(),
 	}
 	s.registerRoutes()
 	return s
 }
 
+// get performs a request and, for signed envelopes, verifies the resolver
+// signature and unwraps the payload.
 func get(t *testing.T, s *Server, url string) (*httptest.ResponseRecorder, map[string]any) {
 	t.Helper()
 	req := httptest.NewRequest(http.MethodGet, url, nil)
 	w := httptest.NewRecorder()
 	s.mux.ServeHTTP(w, req)
-	var body map[string]any
-	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(w.Body.Bytes(), &raw); err != nil {
 		t.Fatalf("invalid JSON from %s: %v\n%s", url, err, w.Body.String())
+	}
+	body := map[string]any{}
+	if _, signed := raw["signature"]; signed {
+		var env pki.Envelope
+		if err := json.Unmarshal(w.Body.Bytes(), &env); err != nil {
+			t.Fatal(err)
+		}
+		if err := pki.VerifyEnvelope(&env); err != nil {
+			t.Fatalf("%s: envelope verification failed: %v", url, err)
+		}
+		if env.Resolver != s.identity.PublicKeyHex() {
+			t.Fatalf("%s: envelope signed by %s, want %s", url, env.Resolver, s.identity.PublicKeyHex())
+		}
+		if err := json.Unmarshal(env.Data, &body); err != nil {
+			t.Fatal(err)
+		}
+		return w, body
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
 	}
 	return w, body
 }
 
 func TestResolveReadThroughAndCache(t *testing.T) {
-	fc := seededFake()
+	fc := seededFake(t)
 	s := newTestServer(t, fc, 100, 100)
 
 	w, body := get(t, s, "/resolve?name=example&type=A")
@@ -125,6 +179,9 @@ func TestResolveReadThroughAndCache(t *testing.T) {
 	if body["owner"] != owner.Hex() {
 		t.Errorf("owner = %v", body["owner"])
 	}
+	if body["ownerSigVerified"] != true {
+		t.Errorf("ownerSigVerified = %v, want true", body["ownerSigVerified"])
+	}
 
 	// second hit must come from cache
 	_, body = get(t, s, "/resolve?name=example&type=A")
@@ -137,7 +194,7 @@ func TestResolveReadThroughAndCache(t *testing.T) {
 }
 
 func TestResolveSelectorNormalization(t *testing.T) {
-	fc := seededFake()
+	fc := seededFake(t)
 	s := newTestServer(t, fc, 100, 100)
 
 	// explicit params, mixed case, unsorted -> canonical selector
@@ -157,8 +214,8 @@ func TestResolveSelectorNormalization(t *testing.T) {
 }
 
 func TestResolveTypedNoMatch(t *testing.T) {
-	s := newTestServer(t, seededFake(), 100, 100)
-	w, body := get(t, s, "/resolve?name=example&type=MX")
+	s := newTestServer(t, seededFake(t), 100, 100)
+	w, body := get(t, s, "/resolve?name=example&type=AAAA")
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d", w.Code)
 	}
@@ -170,8 +227,19 @@ func TestResolveTypedNoMatch(t *testing.T) {
 	}
 }
 
+func TestResolveForgedOwnerSig(t *testing.T) {
+	s := newTestServer(t, seededFake(t), 100, 100)
+	w, body := get(t, s, "/resolve?name=example&type=MX&selector=zone%3Dforged")
+	if w.Code != http.StatusOK || body["found"] != true {
+		t.Fatalf("status=%d body=%v", w.Code, body)
+	}
+	if body["ownerSigVerified"] != false {
+		t.Errorf("forged record reported ownerSigVerified=%v, want false", body["ownerSigVerified"])
+	}
+}
+
 func TestResolveValidation(t *testing.T) {
-	s := newTestServer(t, seededFake(), 100, 100)
+	s := newTestServer(t, seededFake(t), 100, 100)
 	urls := []string{
 		"/resolve",                                                // missing name+type
 		"/resolve?name=UPPER&type=A",                              // bad name
@@ -189,7 +257,7 @@ func TestResolveValidation(t *testing.T) {
 }
 
 func TestRateLimit429(t *testing.T) {
-	s := newTestServer(t, seededFake(), 1, 2) // 1 rps, burst 2
+	s := newTestServer(t, seededFake(t), 1, 2) // 1 rps, burst 2
 
 	codes := []int{}
 	for range 4 {
@@ -211,13 +279,13 @@ func TestRateLimit429(t *testing.T) {
 }
 
 func TestDomainEndpoint(t *testing.T) {
-	s := newTestServer(t, seededFake(), 100, 100)
+	s := newTestServer(t, seededFake(t), 100, 100)
 
 	w, body := get(t, s, "/domains/example")
 	if w.Code != http.StatusOK || body["active"] != true {
 		t.Fatalf("status=%d body=%v", w.Code, body)
 	}
-	if len(body["records"].([]any)) != 2 {
+	if len(body["records"].([]any)) != 3 {
 		t.Errorf("records = %v", body["records"])
 	}
 
@@ -233,7 +301,7 @@ func TestDomainEndpoint(t *testing.T) {
 }
 
 func TestTypesEndpoint(t *testing.T) {
-	s := newTestServer(t, seededFake(), 100, 100)
+	s := newTestServer(t, seededFake(t), 100, 100)
 	w, body := get(t, s, "/types")
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d", w.Code)

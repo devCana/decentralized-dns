@@ -16,6 +16,7 @@ import (
 	"github.com/devCana/decentralized-dns/resolver/internal/cache"
 	"github.com/devCana/decentralized-dns/resolver/internal/chain"
 	"github.com/devCana/decentralized-dns/resolver/internal/config"
+	"github.com/devCana/decentralized-dns/resolver/internal/pki"
 )
 
 // eventPollInterval is how often the resolver polls the chain for record
@@ -24,13 +25,14 @@ const eventPollInterval = 2 * time.Second
 
 // Server is the top-level resolver orchestrator.
 type Server struct {
-	cfg     *config.Config
-	log     *slog.Logger
-	chain   ChainReader
-	events  *chain.Client // event watcher; nil in handler tests
-	cache   *cache.TTLCache[*chain.ResolveResult]
-	limiter *ipLimiter
-	mux     *http.ServeMux
+	cfg      *config.Config
+	log      *slog.Logger
+	chain    ChainReader
+	events   *chain.Client // event watcher; nil in handler tests
+	cache    *cache.TTLCache[*chain.ResolveResult]
+	identity *pki.Identity
+	limiter  *ipLimiter
+	mux      *http.ServeMux
 }
 
 // New validates config and connects the subsystems.
@@ -51,8 +53,13 @@ func New(ctx context.Context, cfg *config.Config, log *slog.Logger) (*Server, er
 	if err != nil {
 		return nil, fmt.Errorf("cache: %w", err)
 	}
+	identity, err := pki.LoadOrCreateIdentity(cfg.KeystorePath)
+	if err != nil {
+		return nil, fmt.Errorf("resolver identity: %w", err)
+	}
+	log.Info("resolver identity", "pubKey", identity.PublicKeyHex())
 
-	s := &Server{cfg: cfg, log: log, chain: chainClient, events: chainClient, cache: ttlCache, mux: http.NewServeMux()}
+	s := &Server{cfg: cfg, log: log, chain: chainClient, events: chainClient, cache: ttlCache, identity: identity, mux: http.NewServeMux()}
 	s.registerRoutes()
 	return s, nil
 }
