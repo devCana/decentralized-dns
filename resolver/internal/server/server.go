@@ -13,15 +13,21 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 
+	"github.com/devCana/decentralized-dns/resolver/internal/cache"
 	"github.com/devCana/decentralized-dns/resolver/internal/chain"
 	"github.com/devCana/decentralized-dns/resolver/internal/config"
 )
+
+// eventPollInterval is how often the resolver polls the chain for record
+// events driving proactive cache invalidation.
+const eventPollInterval = 2 * time.Second
 
 // Server is the top-level resolver orchestrator.
 type Server struct {
 	cfg   *config.Config
 	log   *slog.Logger
 	chain *chain.Client
+	cache *cache.TTLCache[*chain.ResolveResult]
 	mux   *http.ServeMux
 }
 
@@ -39,8 +45,12 @@ func New(ctx context.Context, cfg *config.Config, log *slog.Logger) (*Server, er
 	if err != nil {
 		return nil, err
 	}
+	ttlCache, err := cache.New[*chain.ResolveResult](cfg.CacheSize)
+	if err != nil {
+		return nil, fmt.Errorf("cache: %w", err)
+	}
 
-	s := &Server{cfg: cfg, log: log, chain: chainClient, mux: http.NewServeMux()}
+	s := &Server{cfg: cfg, log: log, chain: chainClient, cache: ttlCache, mux: http.NewServeMux()}
 	s.mux.HandleFunc("GET /healthz", s.handleHealthz)
 	return s, nil
 }
@@ -48,19 +58,33 @@ func New(ctx context.Context, cfg *config.Config, log *slog.Logger) (*Server, er
 // Chain exposes the blockchain client to sibling subsystems.
 func (s *Server) Chain() *chain.Client { return s.chain }
 
+// Cache exposes the TTL cache (REST handlers, admin dashboard).
+func (s *Server) Cache() *cache.TTLCache[*chain.ResolveResult] { return s.cache }
+
 // Handler returns the root HTTP handler (REST API mounts onto it later).
 func (s *Server) Handler() http.Handler { return s.mux }
 
 // Mux exposes the route registry for subsystems (REST API, admin).
 func (s *Server) Mux() *http.ServeMux { return s.mux }
 
-// Run serves HTTP until ctx is cancelled, then shuts down gracefully.
+// Run serves HTTP until ctx is cancelled, then shuts down gracefully. It
+// also runs the event watcher feeding push invalidation into the cache.
 func (s *Server) Run(ctx context.Context) error {
 	httpSrv := &http.Server{
 		Addr:              fmt.Sprintf(":%d", s.cfg.RESTPort),
 		Handler:           s.mux,
 		ReadHeaderTimeout: 5 * time.Second,
 	}
+
+	go func() {
+		err := s.chain.WatchRecordEvents(ctx, eventPollInterval, func(ev chain.RecordEvent) {
+			s.log.Debug("invalidating", "kind", ev.Kind, "name", ev.Name)
+			s.cache.HandleEvent(ev)
+		})
+		if err != nil && !errors.Is(err, context.Canceled) {
+			s.log.Warn("event watcher stopped", "err", err)
+		}
+	}()
 
 	errCh := make(chan error, 1)
 	go func() {

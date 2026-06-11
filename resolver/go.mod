@@ -1,8 +1,12 @@
 module github.com/devCana/decentralized-dns/resolver
 
-go 1.24.0
+go 1.25.0
 
-require github.com/ethereum/go-ethereum v1.17.3
+require (
+	github.com/ethereum/go-ethereum v1.17.3
+	github.com/hashicorp/golang-lru/v2 v2.0.7
+	golang.org/x/crypto v0.53.0
+)
 
 require (
 	github.com/Microsoft/go-winio v0.6.2 // indirect
@@ -30,7 +34,6 @@ require (
 	go.opentelemetry.io/otel v1.40.0 // indirect
 	go.opentelemetry.io/otel/metric v1.40.0 // indirect
 	go.opentelemetry.io/otel/trace v1.40.0 // indirect
-	golang.org/x/crypto v0.47.0 // indirect
 	golang.org/x/sync v0.19.0 // indirect
-	golang.org/x/sys v0.40.0 // indirect
+	golang.org/x/sys v0.46.0 // indirect
 )
