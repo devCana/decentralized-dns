@@ -10,9 +10,12 @@ const PUBKEY2 = "0x" + "22".repeat(65);
 describe("NamespaceDApp", () => {
   async function deployFixture() {
     const [treasurer, alice, bob] = await ethers.getSigners();
+    const registry = await (
+      await ethers.getContractFactory("RecordSchemaRegistry")
+    ).deploy();
     const factory = await ethers.getContractFactory("NamespaceDApp");
-    const dapp = await factory.deploy(BASE_PRICE);
-    return { dapp, treasurer, alice, bob };
+    const dapp = await factory.deploy(BASE_PRICE, await registry.getAddress());
+    return { dapp, registry, treasurer, alice, bob };
   }
 
   describe("pricing", () => {

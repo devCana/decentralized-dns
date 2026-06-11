@@ -15,11 +15,18 @@ async function main() {
 
   const deployed: Record<string, string> = {};
 
+  const registry = await (
+    await ethers.getContractFactory("RecordSchemaRegistry")
+  ).deploy();
+  await registry.waitForDeployment();
+  deployed.RecordSchemaRegistry = await registry.getAddress();
+  console.log(`RecordSchemaRegistry deployed at ${deployed.RecordSchemaRegistry}`);
+
   // 0.01 ether yearly base fee (HLD pricing decision: length-based multiplier).
   const basePrice = ethers.parseEther(process.env.BASE_PRICE_ETH || "0.01");
   const namespace = await (
     await ethers.getContractFactory("NamespaceDApp")
-  ).deploy(basePrice);
+  ).deploy(basePrice, deployed.RecordSchemaRegistry);
   await namespace.waitForDeployment();
   deployed.NamespaceDApp = await namespace.getAddress();
   console.log(`NamespaceDApp deployed at ${deployed.NamespaceDApp}`);
