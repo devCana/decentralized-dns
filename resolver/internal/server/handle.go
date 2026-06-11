@@ -1,0 +1,52 @@
+package server
+
+import (
+	"context"
+	"time"
+
+	"github.com/ethereum/go-ethereum/common"
+
+	"github.com/devCana/decentralized-dns/resolver/internal/cache"
+	"github.com/devCana/decentralized-dns/resolver/internal/chain"
+	"github.com/devCana/decentralized-dns/resolver/internal/query"
+)
+
+// ChainReader is the read-only chain surface the query path depends on.
+// *chain.Client satisfies it; tests substitute a fake.
+type ChainReader interface {
+	Resolve(ctx context.Context, name, recordType, selector string) (*chain.ResolveResult, error)
+	GetDomain(ctx context.Context, name string) (*chain.Domain, error)
+	ListRecords(ctx context.Context, name string) ([]chain.Record, error)
+	ListTypes(ctx context.Context) ([]string, error)
+	ChainHead(ctx context.Context) (uint64, error)
+}
+
+// QueryResult is HandleQuery's answer: the chain result plus provenance.
+type QueryResult struct {
+	Result *chain.ResolveResult
+	Cached bool
+}
+
+// HandleQuery is the single resolution path shared by the REST and UDP
+// front ends (HLD §4.1.2): read-through cache -> chain, caching positive
+// answers for the record's on-chain TTL. Misses are not negatively cached
+// so new records become visible immediately.
+func (s *Server) HandleQuery(ctx context.Context, q query.Query) (*QueryResult, error) {
+	key := cache.Key{Name: q.Name, Type: q.Type, Selector: q.Selector}
+	if res, ok := s.cache.Get(key); ok {
+		return &QueryResult{Result: res, Cached: true}, nil
+	}
+	res, err := s.chain.Resolve(ctx, q.Name, q.Type, q.Selector)
+	if err != nil {
+		return nil, err
+	}
+	if res.Record.Exists && res.Record.TTL > 0 {
+		s.cache.Set(key, res, time.Duration(res.Record.TTL)*time.Second)
+	}
+	return &QueryResult{Result: res}, nil
+}
+
+// Found reports whether the result carries a live record.
+func (r *QueryResult) Found() bool {
+	return r.Result != nil && r.Result.Record.Exists && r.Result.Owner != (common.Address{})
+}

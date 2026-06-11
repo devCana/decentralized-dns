@@ -24,11 +24,13 @@ const eventPollInterval = 2 * time.Second
 
 // Server is the top-level resolver orchestrator.
 type Server struct {
-	cfg   *config.Config
-	log   *slog.Logger
-	chain *chain.Client
-	cache *cache.TTLCache[*chain.ResolveResult]
-	mux   *http.ServeMux
+	cfg     *config.Config
+	log     *slog.Logger
+	chain   ChainReader
+	events  *chain.Client // event watcher; nil in handler tests
+	cache   *cache.TTLCache[*chain.ResolveResult]
+	limiter *ipLimiter
+	mux     *http.ServeMux
 }
 
 // New validates config and connects the subsystems.
@@ -50,13 +52,23 @@ func New(ctx context.Context, cfg *config.Config, log *slog.Logger) (*Server, er
 		return nil, fmt.Errorf("cache: %w", err)
 	}
 
-	s := &Server{cfg: cfg, log: log, chain: chainClient, cache: ttlCache, mux: http.NewServeMux()}
-	s.mux.HandleFunc("GET /healthz", s.handleHealthz)
+	s := &Server{cfg: cfg, log: log, chain: chainClient, events: chainClient, cache: ttlCache, mux: http.NewServeMux()}
+	s.registerRoutes()
 	return s, nil
 }
 
-// Chain exposes the blockchain client to sibling subsystems.
-func (s *Server) Chain() *chain.Client { return s.chain }
+// registerRoutes mounts the REST QueryAPI (HLD §4.1.2). The health probe
+// is exempt from rate limiting so orchestrators can poll freely.
+func (s *Server) registerRoutes() {
+	s.limiter = newIPLimiter(s.cfg.RateRPS, s.cfg.RateBurst)
+	s.mux.HandleFunc("GET /healthz", s.handleHealthz)
+	s.mux.HandleFunc("GET /resolve", s.rateLimited(s.handleResolve))
+	s.mux.HandleFunc("GET /domains/{name}", s.rateLimited(s.handleDomain))
+	s.mux.HandleFunc("GET /types", s.rateLimited(s.handleTypes))
+}
+
+// Chain exposes the blockchain reader to sibling subsystems.
+func (s *Server) Chain() ChainReader { return s.chain }
 
 // Cache exposes the TTL cache (REST handlers, admin dashboard).
 func (s *Server) Cache() *cache.TTLCache[*chain.ResolveResult] { return s.cache }
@@ -77,7 +89,7 @@ func (s *Server) Run(ctx context.Context) error {
 	}
 
 	go func() {
-		err := s.chain.WatchRecordEvents(ctx, eventPollInterval, func(ev chain.RecordEvent) {
+		err := s.events.WatchRecordEvents(ctx, eventPollInterval, func(ev chain.RecordEvent) {
 			s.log.Debug("invalidating", "kind", ev.Kind, "name", ev.Name)
 			s.cache.HandleEvent(ev)
 		})
@@ -97,7 +109,7 @@ func (s *Server) Run(ctx context.Context) error {
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		_ = httpSrv.Shutdown(shutdownCtx)
-		s.chain.Close()
+		s.events.Close()
 		return nil
 	case err := <-errCh:
 		if errors.Is(err, http.ErrServerClosed) {

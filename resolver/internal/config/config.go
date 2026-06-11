@@ -19,6 +19,8 @@ type Config struct {
 	UDPPort         int    // UDP QueryAPI listen port
 	BTListenPort    int    // BitTorrent engine listen port
 	CacheSize       int    // max entries in the TTL LRU cache
+	RateRPS         int    // per-IP REST rate limit, requests/second
+	RateBurst       int    // per-IP REST burst allowance
 	DataDir         string // scratch dir for torrent data
 }
 
@@ -43,6 +45,12 @@ func FromEnv() (*Config, error) {
 		return nil, err
 	}
 	if cfg.CacheSize, err = getEnvInt("CACHE_SIZE", 4096); err != nil {
+		return nil, err
+	}
+	if cfg.RateRPS, err = getEnvInt("RATE_RPS", 20); err != nil {
+		return nil, err
+	}
+	if cfg.RateBurst, err = getEnvInt("RATE_BURST", 40); err != nil {
 		return nil, err
 	}
 	return cfg, nil
