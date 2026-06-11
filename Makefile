@@ -1,5 +1,5 @@
 .PHONY: all build test clean contracts-install contracts-build contracts-test \
-        resolver-build resolver-test deploy-localhost chain
+        resolver-build resolver-test deploy-localhost chain bindings
 
 all: build
 
@@ -21,6 +21,9 @@ chain:
 
 deploy-localhost:
 	cd contracts && npx hardhat run scripts/deploy.ts --network localhost
+
+bindings:
+	scripts/gen-bindings.sh
 
 resolver-build:
 	cd resolver && go build -o bin/ ./...

@@ -4,19 +4,36 @@
 package main
 
 import (
+	"context"
 	"fmt"
+	"log/slog"
 	"os"
+	"os/signal"
+	"syscall"
 
 	"github.com/devCana/decentralized-dns/resolver/internal/config"
+	"github.com/devCana/decentralized-dns/resolver/internal/server"
 )
 
 func main() {
+	log := slog.New(slog.NewTextHandler(os.Stderr, nil))
+
 	cfg, err := config.FromEnv()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "config:", err)
 		os.Exit(1)
 	}
-	// Subsystems are wired in as they are implemented (issues #4-#14).
-	fmt.Printf("ddns-resolver scaffold: REST=:%d UDP=:%d RPC=%s\n",
-		cfg.RESTPort, cfg.UDPPort, cfg.RPCURL)
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	srv, err := server.New(ctx, cfg, log)
+	if err != nil {
+		log.Error("boot failed", "err", err)
+		os.Exit(1)
+	}
+	if err := srv.Run(ctx); err != nil {
+		log.Error("server exited", "err", err)
+		os.Exit(1)
+	}
 }

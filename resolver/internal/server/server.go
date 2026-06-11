@@ -1,0 +1,98 @@
+// Package server hosts the ResolverServer orchestrator (HLD §4.1.2): it
+// boots subsystems, wires them together, and owns the shared config.
+package server
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"log/slog"
+	"net/http"
+	"time"
+
+	"github.com/ethereum/go-ethereum/common"
+
+	"github.com/devCana/decentralized-dns/resolver/internal/chain"
+	"github.com/devCana/decentralized-dns/resolver/internal/config"
+)
+
+// Server is the top-level resolver orchestrator.
+type Server struct {
+	cfg   *config.Config
+	log   *slog.Logger
+	chain *chain.Client
+	mux   *http.ServeMux
+}
+
+// New validates config and connects the subsystems.
+func New(ctx context.Context, cfg *config.Config, log *slog.Logger) (*Server, error) {
+	if !common.IsHexAddress(cfg.ContractAddress) {
+		return nil, fmt.Errorf("CONTRACT_ADDRESS %q is not a hex address", cfg.ContractAddress)
+	}
+	if !common.IsHexAddress(cfg.RegistryAddress) {
+		return nil, fmt.Errorf("REGISTRY_ADDRESS %q is not a hex address", cfg.RegistryAddress)
+	}
+	chainClient, err := chain.Dial(ctx, cfg.RPCURL,
+		common.HexToAddress(cfg.ContractAddress),
+		common.HexToAddress(cfg.RegistryAddress), log)
+	if err != nil {
+		return nil, err
+	}
+
+	s := &Server{cfg: cfg, log: log, chain: chainClient, mux: http.NewServeMux()}
+	s.mux.HandleFunc("GET /healthz", s.handleHealthz)
+	return s, nil
+}
+
+// Chain exposes the blockchain client to sibling subsystems.
+func (s *Server) Chain() *chain.Client { return s.chain }
+
+// Handler returns the root HTTP handler (REST API mounts onto it later).
+func (s *Server) Handler() http.Handler { return s.mux }
+
+// Mux exposes the route registry for subsystems (REST API, admin).
+func (s *Server) Mux() *http.ServeMux { return s.mux }
+
+// Run serves HTTP until ctx is cancelled, then shuts down gracefully.
+func (s *Server) Run(ctx context.Context) error {
+	httpSrv := &http.Server{
+		Addr:              fmt.Sprintf(":%d", s.cfg.RESTPort),
+		Handler:           s.mux,
+		ReadHeaderTimeout: 5 * time.Second,
+	}
+
+	errCh := make(chan error, 1)
+	go func() {
+		s.log.Info("REST listening", "port", s.cfg.RESTPort)
+		errCh <- httpSrv.ListenAndServe()
+	}()
+
+	select {
+	case <-ctx.Done():
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = httpSrv.Shutdown(shutdownCtx)
+		s.chain.Close()
+		return nil
+	case err := <-errCh:
+		if errors.Is(err, http.ErrServerClosed) {
+			return nil
+		}
+		return err
+	}
+}
+
+func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
+	defer cancel()
+
+	head, err := s.chain.ChainHead(ctx)
+	w.Header().Set("Content-Type", "application/json")
+	if err != nil {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_ = json.NewEncoder(w).Encode(map[string]any{"status": "degraded", "error": err.Error()})
+		return
+	}
+	_ = json.NewEncoder(w).Encode(map[string]any{"status": "ok", "chainHead": head})
+}
