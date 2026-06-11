@@ -1,0 +1,21 @@
+# Decentralized DNS — local development / e2e topology (HLD §4.4).
+# Skeleton: the chain service runs a local Hardhat node; resolver and
+# seeder services are added by issue #17.
+services:
+  chain:
+    image: node:22-bookworm-slim
+    working_dir: /app
+    volumes:
+      - ./contracts:/app
+    command: sh -c "npm install && npx hardhat node --hostname 0.0.0.0"
+    ports:
+      - "8545:8545"
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "node -e \"fetch('http://127.0.0.1:8545',{method:'POST',headers:{'content-type':'application/json'},body:'{\\\"jsonrpc\\\":\\\"2.0\\\",\\\"id\\\":1,\\\"method\\\":\\\"eth_chainId\\\"}'}).then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\"",
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 30

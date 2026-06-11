@@ -1,0 +1,24 @@
+.DS_Store
+
+# Node / Hardhat
+node_modules/
+contracts/artifacts/
+contracts/cache/
+contracts/typechain-types/
+contracts/coverage/
+contracts/coverage.json
+contracts/deployments/localhost.json
+
+# Go
+resolver/bin/
+resolver/dist/
+
+# Local env & secrets
+.env
+*.key
+keystore/
+
+# Editor
+.vscode/
+.idea/
+
