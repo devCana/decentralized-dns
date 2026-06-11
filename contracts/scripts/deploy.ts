@@ -15,16 +15,14 @@ async function main() {
 
   const deployed: Record<string, string> = {};
 
-  // Contracts are added here as they are implemented (issues #2, #3, #8).
-  const contractNames: string[] = [];
-
-  for (const name of contractNames) {
-    const factory = await ethers.getContractFactory(name);
-    const instance = await factory.deploy();
-    await instance.waitForDeployment();
-    deployed[name] = await instance.getAddress();
-    console.log(`${name} deployed at ${deployed[name]}`);
-  }
+  // 0.01 ether yearly base fee (HLD pricing decision: length-based multiplier).
+  const basePrice = ethers.parseEther(process.env.BASE_PRICE_ETH || "0.01");
+  const namespace = await (
+    await ethers.getContractFactory("NamespaceDApp")
+  ).deploy(basePrice);
+  await namespace.waitForDeployment();
+  deployed.NamespaceDApp = await namespace.getAddress();
+  console.log(`NamespaceDApp deployed at ${deployed.NamespaceDApp}`);
 
   const outDir = path.join(__dirname, "..", "deployments");
   fs.mkdirSync(outDir, { recursive: true });
