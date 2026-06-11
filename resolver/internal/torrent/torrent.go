@@ -15,10 +15,12 @@ import (
 	"log/slog"
 	"net"
 	"os"
+	"path/filepath"
 
 	"github.com/anacrolix/torrent"
 	"github.com/anacrolix/torrent/bencode"
 	"github.com/anacrolix/torrent/metainfo"
+	"github.com/anacrolix/torrent/storage"
 )
 
 // MaxFetchBytes caps fetched resources; published site bundles are small
@@ -120,15 +122,22 @@ func (e *Engine) SeedFile(path string) (infoHash, sha string, err error) {
 		return "", "", err
 	}
 	mi := &metainfo.MetaInfo{InfoBytes: infoBytes}
-	t, err := e.client.AddTorrent(mi)
-	if err != nil {
-		return "", "", fmt.Errorf("torrent: add: %w", err)
-	}
+	ih := mi.HashInfoBytes()
+	t, _ := e.client.AddTorrentOpt(torrent.AddTorrentOpts{
+		InfoHash:  ih,
+		InfoBytes: mi.InfoBytes,
+		Storage: storage.NewFileOpts(storage.NewFileClientOpts{
+			ClientBaseDir: path,
+			FilePathMaker: func(opts storage.FilePathMakerOpts) string {
+				return filepath.Join(opts.File.BestPath()...)
+			},
+		}),
+	})
 	<-t.GotInfo()
-	ih := t.InfoHash().HexString()
+	infoHash = t.InfoHash().HexString()
 	digest := hex.EncodeToString(h.Sum(nil))
-	e.log.Info("seeding resource", "infoHash", ih, "sha256", digest, "bytes", t.Length())
-	return ih, digest, nil
+	e.log.Info("seeding resource", "infoHash", infoHash, "sha256", digest, "bytes", t.Length())
+	return infoHash, digest, nil
 }
 
 // Fetch downloads the torrent identified by infoHashHex, re-hashes the
@@ -146,7 +155,7 @@ func (e *Engine) Fetch(ctx context.Context, infoHashHex, expectedSHAHex string, 
 		return nil, fmt.Errorf("torrent: bad expected sha256 %q", expectedSHAHex)
 	}
 
-	t, isNew := e.client.AddTorrentInfoHashWithStorage(ih, nil)
+	t, isNew := e.client.AddTorrentInfoHash(ih)
 	if isNew {
 		defer t.Drop()
 	}
@@ -159,7 +168,7 @@ func (e *Engine) Fetch(ctx context.Context, infoHashHex, expectedSHAHex string, 
 		if err != nil {
 			return nil, fmt.Errorf("torrent: bad peer %q: %w", p, err)
 		}
-		t.AddPeers([]torrent.PeerInfo{{Addr: addr}})
+		t.AddPeers([]torrent.PeerInfo{{Addr: addr, Source: torrent.PeerSourceDirect, Trusted: true}})
 	}
 
 	select {
@@ -170,6 +179,7 @@ func (e *Engine) Fetch(ctx context.Context, infoHashHex, expectedSHAHex string, 
 	if t.Length() > MaxFetchBytes {
 		return nil, fmt.Errorf("%w: %d bytes", ErrTooLarge, t.Length())
 	}
+	t.DownloadAll()
 
 	r := t.NewReader()
 	defer r.Close()
