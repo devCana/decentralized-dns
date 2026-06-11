@@ -61,6 +61,7 @@ type resolveResponse struct {
 	Owner            string      `json:"owner,omitempty"`
 	PubKey           string      `json:"pubKey,omitempty"`
 	OwnerSigVerified bool        `json:"ownerSigVerified"`
+	ZKProof          string      `json:"zkProof,omitempty"`
 	Cached           bool        `json:"cached"`
 }
 
@@ -170,6 +171,9 @@ func (s *Server) handleResolve(w http.ResponseWriter, r *http.Request) {
 	resp.Owner = res.Result.Owner.Hex()
 	resp.PubKey = hexutil.Encode(res.Result.PubKey)
 	resp.OwnerSigVerified = res.Result.OwnerSigValid
+	if len(res.Result.ZKProof) > 0 {
+		resp.ZKProof = hexutil.Encode(res.Result.ZKProof)
+	}
 	s.writeSigned(w, http.StatusOK, resp)
 }
 

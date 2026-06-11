@@ -1,4 +1,5 @@
 import { ethers, network } from "hardhat";
+import { execFileSync } from "child_process";
 import * as fs from "fs";
 import * as path from "path";
 import { signRecord } from "./recordSig";
@@ -12,6 +13,22 @@ import { signRecord } from "./recordSig";
  * first). Signs records with the second hardhat account (alice).
  */
 const ALICE_PK = "0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d"; // hardhat account #1
+
+/** MiMC commitment matching the gnark circuit, via the Go helper (issue #9). */
+function commitmentOf(
+  name: string,
+  type: string,
+  selector: string,
+  ttl: number,
+  fieldNames: string[],
+  fieldValues: string[]
+): string {
+  const out = execFileSync("go", ["run", "./cmd/record-commit"], {
+    cwd: path.join(__dirname, "..", "..", "resolver"),
+    input: JSON.stringify({ name, type, selector, ttl, fieldNames, fieldValues }),
+  });
+  return out.toString().trim();
+}
 
 async function main() {
   const file = path.join(__dirname, "..", "deployments", `${network.name}.json`);
@@ -27,7 +44,6 @@ async function main() {
   await (await dapp.connect(alice).register("example", pubKey, { value: price })).wait();
   console.log("registered 'example' for", alice.address);
 
-  const zero = ethers.ZeroHash;
   const set = async (
     recordType: string,
     selector: string,
@@ -36,10 +52,11 @@ async function main() {
     ttl: number
   ) => {
     const sig = await signRecord(aliceWallet, "example", recordType, selector, ttl, fieldNames, fieldValues);
+    const commitment = commitmentOf("example", recordType, selector, ttl, fieldNames, fieldValues);
     await (
       await dapp
         .connect(alice)
-        .setRecord("example", recordType, selector, fieldNames, fieldValues, ttl, sig, zero)
+        .setRecord("example", recordType, selector, fieldNames, fieldValues, ttl, sig, commitment)
     ).wait();
   };
 
@@ -58,7 +75,7 @@ async function main() {
     ["web.example", "HTTP", "QUIC", "443"],
     300
   );
-  console.log("seeded A + 2 SVC records for 'example' (owner-signed)");
+  console.log("seeded A + 2 SVC records for 'example' (owner-signed, ZK-committed)");
 }
 
 main().catch((err) => {

@@ -10,6 +10,7 @@ import (
 	"github.com/devCana/decentralized-dns/resolver/internal/chain"
 	"github.com/devCana/decentralized-dns/resolver/internal/pki"
 	"github.com/devCana/decentralized-dns/resolver/internal/query"
+	"github.com/devCana/decentralized-dns/resolver/internal/zk"
 )
 
 // ChainReader is the read-only chain surface the query path depends on.
@@ -49,11 +50,44 @@ func (s *Server) HandleQuery(ctx context.Context, q query.Query) (*QueryResult, 
 		} else {
 			res.OwnerSigValid = true
 		}
+		res.ZKProof = s.proveRecord(q.Name, res.Record)
 		if res.Record.TTL > 0 {
 			s.cache.Set(key, res, time.Duration(res.Record.TTL)*time.Second)
 		}
 	}
 	return &QueryResult{Result: res}, nil
+}
+
+// proveRecord generates the Groth16 record-commitment proof (HLD §3.5)
+// when the record carries a commitment. The proof is cached with the
+// entry, so the ~50ms proving cost is paid once per TTL window. An empty
+// result means no commitment, an oversized payload, or a commitment that
+// does not match the payload (nothing true can be proven).
+func (s *Server) proveRecord(name string, rec chain.Record) []byte {
+	if rec.Commitment == ([32]byte{}) {
+		return nil
+	}
+	msg := pki.RecordMessage(name, rec)
+	com, err := zk.Commitment(msg)
+	if err != nil {
+		s.log.Warn("zk commitment", "name", name, "err", err)
+		return nil
+	}
+	if com != rec.Commitment {
+		s.log.Warn("on-chain commitment does not match payload", "name", name, "type", rec.Type)
+		return nil
+	}
+	proof, err := zk.Prove(msg)
+	if err != nil {
+		s.log.Warn("zk prove", "name", name, "err", err)
+		return nil
+	}
+	calldata, err := zk.SolidityCalldata(proof)
+	if err != nil {
+		s.log.Warn("zk calldata", "name", name, "err", err)
+		return nil
+	}
+	return calldata
 }
 
 // Found reports whether the result carries a live record.

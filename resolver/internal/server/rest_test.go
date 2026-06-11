@@ -16,6 +16,7 @@ import (
 	"github.com/devCana/decentralized-dns/resolver/internal/chain"
 	"github.com/devCana/decentralized-dns/resolver/internal/config"
 	"github.com/devCana/decentralized-dns/resolver/internal/pki"
+	"github.com/devCana/decentralized-dns/resolver/internal/zk"
 )
 
 // fakeChain is an in-memory ChainReader for handler tests.
@@ -72,6 +73,9 @@ func seededFake(t *testing.T) *fakeChain {
 		FieldVals: []string{"93.184.216.34"}, TTL: 3600, Generation: 1, Exists: true,
 	}
 	if rec.OwnerSig, err = pki.SignRecord("example", rec, key); err != nil {
+		t.Fatal(err)
+	}
+	if rec.Commitment, err = zk.Commitment(pki.RecordMessage("example", rec)); err != nil {
 		t.Fatal(err)
 	}
 	svc := chain.Record{
@@ -190,6 +194,41 @@ func TestResolveReadThroughAndCache(t *testing.T) {
 	}
 	if fc.resolveCalls != 1 {
 		t.Errorf("resolveCalls = %d, want 1", fc.resolveCalls)
+	}
+}
+
+// TestResolveZKProof: a committed record gets a verifiable Groth16 proof in
+// the response (UC-6); an uncommitted record gets none; the proof is cached
+// with the entry (proving cost paid once per TTL window).
+func TestResolveZKProof(t *testing.T) {
+	fc := seededFake(t)
+	s := newTestServer(t, fc, 100, 100)
+
+	_, body := get(t, s, "/resolve?name=example&type=A")
+	proofHex, ok := body["zkProof"].(string)
+	if !ok || len(proofHex) != 2+2*256 {
+		t.Fatalf("zkProof = %v, want 256-byte hex", body["zkProof"])
+	}
+	calldata := common.FromHex(proofHex)
+	proof, err := zk.ProofFromSolidityCalldata(calldata)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec := fc.records[key2("example", "A", "")].Record
+	if err := zk.Verify(proof, rec.Commitment); err != nil {
+		t.Fatalf("served proof does not verify: %v", err)
+	}
+
+	// cached hit serves the same proof without re-proving
+	_, body = get(t, s, "/resolve?name=example&type=A")
+	if body["cached"] != true || body["zkProof"] != proofHex {
+		t.Errorf("cached hit lost the proof: cached=%v", body["cached"])
+	}
+
+	// record without a commitment carries no proof
+	_, body = get(t, s, "/resolve?name=example&type=SVC&port=443&service=HTTP&transport=QUIC")
+	if _, has := body["zkProof"]; has {
+		t.Errorf("uncommitted record must not carry zkProof: %v", body["zkProof"])
 	}
 }
 
