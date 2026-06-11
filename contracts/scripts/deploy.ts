@@ -31,6 +31,12 @@ async function main() {
   deployed.NamespaceDApp = await namespace.getAddress();
   console.log(`NamespaceDApp deployed at ${deployed.NamespaceDApp}`);
 
+  // gnark-exported Groth16 verifier for record-commitment proofs.
+  const verifier = await (await ethers.getContractFactory("Verifier")).deploy();
+  await verifier.waitForDeployment();
+  deployed.ZKVerifier = await verifier.getAddress();
+  console.log(`ZKVerifier deployed at ${deployed.ZKVerifier}`);
+
   const outDir = path.join(__dirname, "..", "deployments");
   fs.mkdirSync(outDir, { recursive: true });
   const outFile = path.join(outDir, `${network.name}.json`);

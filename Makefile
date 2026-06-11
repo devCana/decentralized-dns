@@ -1,5 +1,6 @@
 .PHONY: all build test clean contracts-install contracts-build contracts-test \
-        resolver-build resolver-test deploy-localhost chain bindings
+        resolver-build resolver-test deploy-localhost seed-localhost chain \
+        bindings zk-setup
 
 all: build
 
@@ -22,8 +23,16 @@ chain:
 deploy-localhost:
 	cd contracts && npx hardhat run scripts/deploy.ts --network localhost
 
+seed-localhost:
+	cd contracts && npx hardhat run scripts/seed.ts --network localhost
+
 bindings:
 	scripts/gen-bindings.sh
+
+# Dev-only Groth16 ceremony: regenerates resolver/internal/zk/artifacts,
+# contracts/contracts/ZKVerifier.sol and the hardhat proof fixture.
+zk-setup:
+	cd resolver && go run ./cmd/zkgen
 
 resolver-build:
 	cd resolver && go build -o bin/ ./...
