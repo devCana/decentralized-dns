@@ -17,6 +17,7 @@ import (
 	"github.com/devCana/decentralized-dns/resolver/internal/chain"
 	"github.com/devCana/decentralized-dns/resolver/internal/config"
 	"github.com/devCana/decentralized-dns/resolver/internal/pki"
+	bttorrent "github.com/devCana/decentralized-dns/resolver/internal/torrent"
 )
 
 // eventPollInterval is how often the resolver polls the chain for record
@@ -30,6 +31,8 @@ type Server struct {
 	chain    ChainReader
 	events   *chain.Client // event watcher; nil in handler tests
 	cache    *cache.TTLCache[*chain.ResolveResult]
+	bt       *bttorrent.Engine
+	resource ResourceFetcher
 	identity *pki.Identity
 	limiter  *ipLimiter
 	mux      *http.ServeMux
@@ -58,8 +61,13 @@ func New(ctx context.Context, cfg *config.Config, log *slog.Logger) (*Server, er
 		return nil, fmt.Errorf("resolver identity: %w", err)
 	}
 	log.Info("resolver identity", "pubKey", identity.PublicKeyHex())
+	bt, err := bttorrent.New(bttorrent.Config{DataDir: cfg.DataDir, ListenPort: cfg.BTListenPort, Logger: log})
+	if err != nil {
+		chainClient.Close()
+		return nil, err
+	}
 
-	s := &Server{cfg: cfg, log: log, chain: chainClient, events: chainClient, cache: ttlCache, identity: identity, mux: http.NewServeMux()}
+	s := &Server{cfg: cfg, log: log, chain: chainClient, events: chainClient, cache: ttlCache, bt: bt, resource: bt, identity: identity, mux: http.NewServeMux()}
 	s.registerRoutes()
 	return s, nil
 }
@@ -70,6 +78,7 @@ func (s *Server) registerRoutes() {
 	s.limiter = newIPLimiter(s.cfg.RateRPS, s.cfg.RateBurst)
 	s.mux.HandleFunc("GET /healthz", s.handleHealthz)
 	s.mux.HandleFunc("GET /resolve", s.rateLimited(s.handleResolve))
+	s.mux.HandleFunc("GET /resource", s.rateLimited(s.handleResource))
 	s.mux.HandleFunc("GET /domains/{name}", s.rateLimited(s.handleDomain))
 	s.mux.HandleFunc("GET /types", s.rateLimited(s.handleTypes))
 }
@@ -89,6 +98,11 @@ func (s *Server) Mux() *http.ServeMux { return s.mux }
 // Run serves HTTP until ctx is cancelled, then shuts down gracefully. It
 // also runs the event watcher feeding push invalidation into the cache.
 func (s *Server) Run(ctx context.Context) error {
+	defer func() {
+		if s.bt != nil {
+			s.bt.Close()
+		}
+	}()
 	httpSrv := &http.Server{
 		Addr:              fmt.Sprintf(":%d", s.cfg.RESTPort),
 		Handler:           s.mux,

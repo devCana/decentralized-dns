@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"crypto/ed25519"
 	"encoding/json"
 	"log/slog"
 	"net/http"
@@ -10,12 +11,14 @@ import (
 	"testing"
 
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/common/hexutil"
 	"github.com/ethereum/go-ethereum/crypto"
 
 	"github.com/devCana/decentralized-dns/resolver/internal/cache"
 	"github.com/devCana/decentralized-dns/resolver/internal/chain"
 	"github.com/devCana/decentralized-dns/resolver/internal/config"
 	"github.com/devCana/decentralized-dns/resolver/internal/pki"
+	bttorrent "github.com/devCana/decentralized-dns/resolver/internal/torrent"
 	"github.com/devCana/decentralized-dns/resolver/internal/zk"
 )
 
@@ -58,6 +61,31 @@ func (f *fakeChain) ChainHead(_ context.Context) (uint64, error) { return 7, nil
 
 var owner = common.HexToAddress("0x70997970C51812dc3A010C7d01b50e0d17dc79C8")
 
+const (
+	resourceInfoHash = "0123456789abcdef0123456789abcdef01234567"
+	resourceSHA      = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+)
+
+type fakeResourceFetcher struct {
+	body     []byte
+	err      error
+	calls    int
+	infoHash string
+	sha      string
+	peers    []string
+}
+
+func (f *fakeResourceFetcher) Fetch(_ context.Context, infoHash, sha string, peers []string) ([]byte, error) {
+	f.calls++
+	f.infoHash = infoHash
+	f.sha = sha
+	f.peers = append([]string(nil), peers...)
+	if f.err != nil {
+		return nil, f.err
+	}
+	return append([]byte(nil), f.body...), nil
+}
+
 func seededFake(t *testing.T) *fakeChain {
 	t.Helper()
 	key, err := crypto.GenerateKey()
@@ -87,6 +115,15 @@ func seededFake(t *testing.T) *fakeChain {
 	if svc.OwnerSig, err = pki.SignRecord("example", svc, key); err != nil {
 		t.Fatal(err)
 	}
+	resource := chain.Record{
+		Type: "ResourceRef", Selector: "",
+		FieldNames: []string{"infoHash", "sha256", "contentType"},
+		FieldVals:  []string{resourceInfoHash, resourceSHA, "text/html"},
+		TTL:        120, Generation: 1, Exists: true,
+	}
+	if resource.OwnerSig, err = pki.SignRecord("example", resource, key); err != nil {
+		t.Fatal(err)
+	}
 	// forged record: valid shape, signature from a different key
 	forged := chain.Record{
 		Type: "MX", Selector: "zone=forged", FieldNames: []string{"host", "priority"},
@@ -100,6 +137,7 @@ func seededFake(t *testing.T) *fakeChain {
 		records: map[string]chain.ResolveResult{
 			key2("example", "A", ""):             {Record: rec, Owner: ownerAddr, PubKey: pubKey},
 			key2("example", "SVC", svc.Selector): {Record: svc, Owner: ownerAddr, PubKey: pubKey},
+			key2("example", "ResourceRef", ""):   {Record: resource, Owner: ownerAddr, PubKey: pubKey},
 			key2("example", "MX", "zone=forged"): {Record: forged, Owner: ownerAddr, PubKey: pubKey},
 		},
 		domains: map[string]chain.Domain{
@@ -163,6 +201,14 @@ func get(t *testing.T, s *Server, url string) (*httptest.ResponseRecorder, map[s
 		t.Fatal(err)
 	}
 	return w, body
+}
+
+func rawGet(t *testing.T, s *Server, url string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodGet, url, nil)
+	w := httptest.NewRecorder()
+	s.mux.ServeHTTP(w, req)
+	return w
 }
 
 func TestResolveReadThroughAndCache(t *testing.T) {
@@ -230,6 +276,95 @@ func TestResolveZKProof(t *testing.T) {
 	if _, has := body["zkProof"]; has {
 		t.Errorf("uncommitted record must not carry zkProof: %v", body["zkProof"])
 	}
+}
+
+func TestResourceFetchServesSignedVerifiedBody(t *testing.T) {
+	fc := seededFake(t)
+	s := newTestServer(t, fc, 100, 100)
+	payload := []byte("<!doctype html><title>Decentralized DNS</title>")
+	fetcher := &fakeResourceFetcher{body: payload}
+	s.resource = fetcher
+
+	w := rawGet(t, s, "/resource?name=example&peer=127.0.0.1:42069&peer=127.0.0.1:42070")
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d: %s", w.Code, w.Body.String())
+	}
+	if w.Body.String() != string(payload) {
+		t.Fatalf("body = %q, want %q", w.Body.String(), payload)
+	}
+	if fetcher.calls != 1 || fetcher.infoHash != resourceInfoHash || fetcher.sha != resourceSHA {
+		t.Fatalf("fetch args = calls:%d info:%q sha:%q", fetcher.calls, fetcher.infoHash, fetcher.sha)
+	}
+	if len(fetcher.peers) != 2 || fetcher.peers[0] != "127.0.0.1:42069" || fetcher.peers[1] != "127.0.0.1:42070" {
+		t.Fatalf("peers = %v", fetcher.peers)
+	}
+	if w.Header().Get("Content-Type") != "text/html" {
+		t.Fatalf("content-type = %q", w.Header().Get("Content-Type"))
+	}
+	if w.Header().Get("X-DDNS-OwnerSig-Verified") != "true" {
+		t.Fatalf("owner sig header = %q", w.Header().Get("X-DDNS-OwnerSig-Verified"))
+	}
+	if w.Header().Get("X-DDNS-InfoHash") != resourceInfoHash || w.Header().Get("X-DDNS-SHA256") != resourceSHA {
+		t.Fatalf("resource headers info=%q sha=%q", w.Header().Get("X-DDNS-InfoHash"), w.Header().Get("X-DDNS-SHA256"))
+	}
+	if w.Header().Get("Cache-Control") != "public, max-age=120" {
+		t.Fatalf("cache-control = %q", w.Header().Get("Cache-Control"))
+	}
+	pub, err := hexutil.Decode(w.Header().Get("X-DDNS-Resolver"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sig, err := hexutil.Decode(w.Header().Get("X-DDNS-Signature"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ed25519.Verify(ed25519.PublicKey(pub), w.Body.Bytes(), sig) {
+		t.Fatal("resource body signature did not verify")
+	}
+}
+
+func TestResourceFetchRejectsTamperAndBadOwnerSignature(t *testing.T) {
+	t.Run("hash mismatch", func(t *testing.T) {
+		fc := seededFake(t)
+		s := newTestServer(t, fc, 100, 100)
+		s.resource = &fakeResourceFetcher{err: bttorrent.ErrHashMismatch}
+		w := rawGet(t, s, "/resource?name=example")
+		if w.Code != http.StatusBadGateway {
+			t.Fatalf("status = %d: %s", w.Code, w.Body.String())
+		}
+		var body errorBody
+		if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+			t.Fatal(err)
+		}
+		if body.Error != "resource_hash_mismatch" {
+			t.Fatalf("error = %q", body.Error)
+		}
+	})
+
+	t.Run("bad owner signature", func(t *testing.T) {
+		fc := seededFake(t)
+		res := fc.records[key2("example", "ResourceRef", "")]
+		res.Record.OwnerSig = []byte{1, 2, 3}
+		fc.records[key2("example", "ResourceRef", "")] = res
+		fetcher := &fakeResourceFetcher{body: []byte("must not fetch")}
+		s := newTestServer(t, fc, 100, 100)
+		s.resource = fetcher
+		w := rawGet(t, s, "/resource?name=example")
+		if w.Code != http.StatusBadGateway {
+			t.Fatalf("status = %d: %s", w.Code, w.Body.String())
+		}
+		if fetcher.calls != 0 {
+			t.Fatalf("fetch called despite bad owner signature")
+		}
+	})
+
+	t.Run("engine disabled", func(t *testing.T) {
+		s := newTestServer(t, seededFake(t), 100, 100)
+		w := rawGet(t, s, "/resource?name=example")
+		if w.Code != http.StatusServiceUnavailable {
+			t.Fatalf("status = %d: %s", w.Code, w.Body.String())
+		}
+	})
 }
 
 func TestResolveSelectorNormalization(t *testing.T) {
@@ -324,8 +459,19 @@ func TestDomainEndpoint(t *testing.T) {
 	if w.Code != http.StatusOK || body["active"] != true {
 		t.Fatalf("status=%d body=%v", w.Code, body)
 	}
-	if len(body["records"].([]any)) != 3 {
+	records := body["records"].([]any)
+	if len(records) != 4 {
 		t.Errorf("records = %v", body["records"])
+	}
+	foundResource := false
+	for _, raw := range records {
+		rec := raw.(map[string]any)
+		if rec["type"] == "ResourceRef" {
+			foundResource = true
+		}
+	}
+	if !foundResource {
+		t.Errorf("ResourceRef missing from records: %v", records)
 	}
 
 	w, body = get(t, s, "/domains/ghost")
