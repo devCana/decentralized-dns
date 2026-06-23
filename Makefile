@@ -1,6 +1,6 @@
 .PHONY: all build test clean contracts-install contracts-build contracts-test \
         resolver-build resolver-test deploy-localhost seed-localhost chain \
-        bindings zk-setup
+        bindings zk-setup demo
 
 all: build
 
@@ -33,6 +33,10 @@ bindings:
 # contracts/contracts/ZKVerifier.sol and the hardhat proof fixture.
 zk-setup:
 	cd resolver && go run ./cmd/zkgen
+
+# Full local end-to-end demo: chain + contracts + resolver + CLIs (HLD §4.4).
+demo:
+	./scripts/demo.sh
 
 resolver-build:
 	cd resolver && go build -o bin/ ./...
