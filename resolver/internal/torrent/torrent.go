@@ -100,8 +100,10 @@ func (e *Engine) ListenAddrs() []string {
 
 // SeedFile makes path available to the swarm. It returns the torrent
 // infohash and the file's SHA-256, both hex — exactly what a ResourceRef
-// record anchors on-chain. The file must stay in place while seeding.
-func (e *Engine) SeedFile(path string) (infoHash, sha string, err error) {
+// record anchors on-chain. The file must stay in place while seeding. ctx
+// bounds the wait for torrent metadata so the publish path can never hang
+// indefinitely (e.g. on an infohash already added by a concurrent Fetch).
+func (e *Engine) SeedFile(ctx context.Context, path string) (infoHash, sha string, err error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return "", "", err
@@ -133,7 +135,11 @@ func (e *Engine) SeedFile(path string) (infoHash, sha string, err error) {
 			},
 		}),
 	})
-	<-t.GotInfo()
+	select {
+	case <-t.GotInfo():
+	case <-ctx.Done():
+		return "", "", fmt.Errorf("torrent: seed metadata for %s: %w", ih.HexString(), ctx.Err())
+	}
 	infoHash = t.InfoHash().HexString()
 	digest := hex.EncodeToString(h.Sum(nil))
 	e.log.Info("seeding resource", "infoHash", infoHash, "sha256", digest, "bytes", t.Length())
@@ -182,6 +188,7 @@ func (e *Engine) Fetch(ctx context.Context, infoHashHex, expectedSHAHex string, 
 	t.DownloadAll()
 
 	r := t.NewReader()
+	r.SetContext(ctx) // abort blocked reads on cancellation; no goroutine leak
 	defer r.Close()
 	buf := bytes.NewBuffer(make([]byte, 0, t.Length()))
 	done := make(chan error, 1)

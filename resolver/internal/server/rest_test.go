@@ -2,7 +2,6 @@ package server
 
 import (
 	"context"
-	"crypto/ed25519"
 	"encoding/json"
 	"log/slog"
 	"net/http"
@@ -11,7 +10,6 @@ import (
 	"testing"
 
 	"github.com/ethereum/go-ethereum/common"
-	"github.com/ethereum/go-ethereum/common/hexutil"
 	"github.com/ethereum/go-ethereum/crypto"
 
 	"github.com/devCana/decentralized-dns/resolver/internal/cache"
@@ -284,6 +282,7 @@ func TestResourceFetchServesSignedVerifiedBody(t *testing.T) {
 	payload := []byte("<!doctype html><title>Decentralized DNS</title>")
 	fetcher := &fakeResourceFetcher{body: payload}
 	s.resource = fetcher
+	s.allowPeerHints = true // this test exercises peer-hint forwarding
 
 	w := rawGet(t, s, "/resource?name=example&peer=127.0.0.1:42069&peer=127.0.0.1:42070")
 	if w.Code != http.StatusOK {
@@ -310,16 +309,29 @@ func TestResourceFetchServesSignedVerifiedBody(t *testing.T) {
 	if w.Header().Get("Cache-Control") != "public, max-age=120" {
 		t.Fatalf("cache-control = %q", w.Header().Get("Cache-Control"))
 	}
-	pub, err := hexutil.Decode(w.Header().Get("X-DDNS-Resolver"))
-	if err != nil {
-		t.Fatal(err)
+	// The resolver signs a manifest binding the body to its provenance, not the
+	// body alone, so none of the X-DDNS-* headers can be altered in transit.
+	if err := pki.VerifyResourceSignature(
+		w.Header().Get("X-DDNS-Resolver"),
+		w.Header().Get("X-DDNS-Signature"),
+		w.Header().Get("X-DDNS-Owner"),
+		w.Header().Get("X-DDNS-PubKey"),
+		resourceInfoHash, resourceSHA, "text/html", true, "",
+		w.Body.Bytes(),
+	); err != nil {
+		t.Fatalf("resource provenance signature did not verify: %v", err)
 	}
-	sig, err := hexutil.Decode(w.Header().Get("X-DDNS-Signature"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !ed25519.Verify(ed25519.PublicKey(pub), w.Body.Bytes(), sig) {
-		t.Fatal("resource body signature did not verify")
+
+	// Tampering with any signed header must break verification.
+	if err := pki.VerifyResourceSignature(
+		w.Header().Get("X-DDNS-Resolver"),
+		w.Header().Get("X-DDNS-Signature"),
+		"0xdeadbeef", // forged owner
+		w.Header().Get("X-DDNS-PubKey"),
+		resourceInfoHash, resourceSHA, "text/html", true, "",
+		w.Body.Bytes(),
+	); err == nil {
+		t.Fatal("tampered owner header must fail provenance verification")
 	}
 }
 

@@ -122,6 +122,14 @@ func TestOwnerSignVerifyRoundTrip(t *testing.T) {
 	if err := VerifyOwnerSig("example", short, owner, pubKey); err == nil {
 		t.Error("short signature accepted")
 	}
+
+	// mismatched field arrays (malformed chain data) must error, not panic
+	mismatch := r
+	mismatch.FieldNames = []string{"target", "service", "transport", "port"}
+	mismatch.FieldVals = []string{"mail.example"}
+	if err := VerifyOwnerSig("example", mismatch, owner, pubKey); err == nil {
+		t.Error("field-array length mismatch accepted")
+	}
 }
 
 func TestEnvelopeSealVerify(t *testing.T) {

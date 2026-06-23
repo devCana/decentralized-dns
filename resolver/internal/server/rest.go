@@ -142,6 +142,30 @@ func (e *dupSelectorError) Error() string {
 	return "selector key " + e.key + " given both in selector= and as a query param"
 }
 
+func (s *Server) resolveResponse(ctx context.Context, q query.Query) (resolveResponse, error) {
+	res, err := s.HandleQuery(ctx, q)
+	if err != nil {
+		return resolveResponse{}, err
+	}
+	resp := resolveResponse{
+		Query:  queryJSON{Name: q.Name, Type: q.Type, Selector: q.Selector},
+		Cached: res.Cached,
+	}
+	if !res.Found() {
+		resp.Error = "no_match"
+		return resp, nil
+	}
+	resp.Found = true
+	resp.Record = toRecordJSON(res.Result.Record)
+	resp.Owner = res.Result.Owner.Hex()
+	resp.PubKey = hexutil.Encode(res.Result.PubKey)
+	resp.OwnerSigVerified = res.Result.OwnerSigValid
+	if len(res.Result.ZKProof) > 0 {
+		resp.ZKProof = hexutil.Encode(res.Result.ZKProof)
+	}
+	return resp, nil
+}
+
 // handleResolve serves GET /resolve (HLD §3.2 query API, UC-4/UC-5).
 func (s *Server) handleResolve(w http.ResponseWriter, r *http.Request) {
 	q, err := parseResolveQuery(r)
@@ -152,27 +176,10 @@ func (s *Server) handleResolve(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), chainCallTimeout)
 	defer cancel()
 
-	res, err := s.HandleQuery(ctx, q)
+	resp, err := s.resolveResponse(ctx, q)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, "chain_error", err.Error())
 		return
-	}
-	resp := resolveResponse{
-		Query:  queryJSON{Name: q.Name, Type: q.Type, Selector: q.Selector},
-		Cached: res.Cached,
-	}
-	if !res.Found() {
-		resp.Error = "no_match"
-		s.writeSigned(w, http.StatusOK, resp)
-		return
-	}
-	resp.Found = true
-	resp.Record = toRecordJSON(res.Result.Record)
-	resp.Owner = res.Result.Owner.Hex()
-	resp.PubKey = hexutil.Encode(res.Result.PubKey)
-	resp.OwnerSigVerified = res.Result.OwnerSigValid
-	if len(res.Result.ZKProof) > 0 {
-		resp.ZKProof = hexutil.Encode(res.Result.ZKProof)
 	}
 	s.writeSigned(w, http.StatusOK, resp)
 }

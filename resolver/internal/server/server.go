@@ -32,10 +32,11 @@ type Server struct {
 	events   *chain.Client // event watcher; nil in handler tests
 	cache    *cache.TTLCache[*chain.ResolveResult]
 	bt       *bttorrent.Engine
-	resource ResourceFetcher
-	identity *pki.Identity
-	limiter  *ipLimiter
-	mux      *http.ServeMux
+	resource       ResourceFetcher
+	identity       *pki.Identity
+	limiter        *ipLimiter
+	allowPeerHints bool
+	mux            *http.ServeMux
 }
 
 // New validates config and connects the subsystems.
@@ -67,7 +68,7 @@ func New(ctx context.Context, cfg *config.Config, log *slog.Logger) (*Server, er
 		return nil, err
 	}
 
-	s := &Server{cfg: cfg, log: log, chain: chainClient, events: chainClient, cache: ttlCache, bt: bt, resource: bt, identity: identity, mux: http.NewServeMux()}
+	s := &Server{cfg: cfg, log: log, chain: chainClient, events: chainClient, cache: ttlCache, bt: bt, resource: bt, identity: identity, allowPeerHints: cfg.AllowPeerHints, mux: http.NewServeMux()}
 	s.registerRoutes()
 	return s, nil
 }
@@ -103,6 +104,10 @@ func (s *Server) Run(ctx context.Context) error {
 			s.bt.Close()
 		}
 	}()
+	udpConn := s.listenUDP(ctx)
+	if udpConn != nil {
+		defer udpConn.Close()
+	}
 	httpSrv := &http.Server{
 		Addr:              fmt.Sprintf(":%d", s.cfg.RESTPort),
 		Handler:           s.mux,
@@ -133,6 +138,9 @@ func (s *Server) Run(ctx context.Context) error {
 		s.events.Close()
 		return nil
 	case err := <-errCh:
+		// The HTTP server died on its own; close the chain client so the event
+		// watcher goroutine unblocks instead of leaking.
+		s.events.Close()
 		if errors.Is(err, http.ErrServerClosed) {
 			return nil
 		}

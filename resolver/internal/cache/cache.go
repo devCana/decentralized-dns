@@ -37,12 +37,20 @@ type Stats struct {
 
 // TTLCache is a thread-safe bounded LRU with per-entry TTL expiry and
 // name-level invalidation.
+//
+// A single mutex (mu) guards BOTH the LRU and the two name indexes. Every LRU
+// mutation runs under mu, and the eviction callback (dropFromIndex) therefore
+// assumes mu is already held by the calling goroutine and never re-locks. This
+// makes Set atomic (index + LRU insert in one critical section) so a
+// concurrent invalidation can never slip into a window where the key is in the
+// index but not yet in the LRU — the race that previously let a stale entry
+// survive push-invalidation.
 type TTLCache[V any] struct {
 	lru      *lru.Cache[Key, entry[V]]
 	capacity int
 	now      func() time.Time // injectable clock for tests
 
-	mu        sync.Mutex                  // guards the two indexes below
+	mu        sync.Mutex                  // guards lru AND the two indexes below
 	nameKeys  map[string]map[Key]struct{} // name -> live keys
 	hashNames map[[32]byte]string         // keccak256(name) -> name
 
@@ -71,13 +79,15 @@ func New[V any](capacity int) (*TTLCache[V], error) {
 // Get returns the cached value if present and not expired.
 func (c *TTLCache[V]) Get(k Key) (V, bool) {
 	var zero V
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	e, ok := c.lru.Get(k)
 	if !ok {
 		c.misses.Add(1)
 		return zero, false
 	}
 	if c.now().After(e.expiresAt) {
-		c.lru.Remove(k) // evict callback cleans the index
+		c.lru.Remove(k) // evict callback cleans the index (mu held)
 		c.misses.Add(1)
 		return zero, false
 	}
@@ -85,9 +95,11 @@ func (c *TTLCache[V]) Get(k Key) (V, bool) {
 	return e.value, true
 }
 
-// Set stores value under k for ttl.
+// Set stores value under k for ttl. The index registration and the LRU insert
+// happen in one critical section so invalidation cannot race the insert.
 func (c *TTLCache[V]) Set(k Key, value V, ttl time.Duration) {
 	c.mu.Lock()
+	defer c.mu.Unlock()
 	keys, ok := c.nameKeys[k.Name]
 	if !ok {
 		keys = map[Key]struct{}{}
@@ -95,22 +107,24 @@ func (c *TTLCache[V]) Set(k Key, value V, ttl time.Duration) {
 		c.hashNames[nameHash(k.Name)] = k.Name
 	}
 	keys[k] = struct{}{}
-	c.mu.Unlock()
-
 	c.lru.Add(k, entry[V]{value: value, expiresAt: c.now().Add(ttl)})
 }
 
 // InvalidateName drops every entry (all types/selectors) of a domain.
 func (c *TTLCache[V]) InvalidateName(name string) {
 	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.invalidateNameLocked(name)
+}
+
+// invalidateNameLocked removes all of a domain's entries; caller holds mu.
+func (c *TTLCache[V]) invalidateNameLocked(name string) {
 	keys := make([]Key, 0, len(c.nameKeys[name]))
 	for k := range c.nameKeys[name] {
 		keys = append(keys, k)
 	}
-	c.mu.Unlock()
-
 	for _, k := range keys {
-		c.lru.Remove(k)
+		c.lru.Remove(k) // evict callback drops k from the index (mu held)
 	}
 }
 
@@ -119,10 +133,9 @@ func (c *TTLCache[V]) InvalidateName(name string) {
 // names we have cached can (and need to) be matched.
 func (c *TTLCache[V]) InvalidateNameHash(hash [32]byte) {
 	c.mu.Lock()
-	name, ok := c.hashNames[hash]
-	c.mu.Unlock()
-	if ok {
-		c.InvalidateName(name)
+	defer c.mu.Unlock()
+	if name, ok := c.hashNames[hash]; ok {
+		c.invalidateNameLocked(name)
 	}
 }
 
@@ -147,9 +160,10 @@ func (c *TTLCache[V]) Stats() Stats {
 	}
 }
 
+// dropFromIndex removes k from the name indexes. It is the LRU eviction
+// callback and is only ever invoked from an LRU mutation that already holds
+// mu, so it must NOT re-lock (sync.Mutex is not reentrant).
 func (c *TTLCache[V]) dropFromIndex(k Key) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
 	if keys, ok := c.nameKeys[k.Name]; ok {
 		delete(keys, k)
 		if len(keys) == 0 {

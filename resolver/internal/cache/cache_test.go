@@ -2,6 +2,7 @@ package cache
 
 import (
 	"fmt"
+	"sync"
 	"testing"
 	"time"
 
@@ -91,6 +92,72 @@ func TestHandleEvent(t *testing.T) {
 		if _, ok := c.Get(k); ok {
 			t.Errorf("event %s did not invalidate", ev.Kind)
 		}
+	}
+}
+
+// TestConcurrentSetInvalidateNoStaleSurvivors hammers Set/Get/InvalidateName/
+// HandleEvent from many goroutines (run with -race). It then quiesces and
+// asserts the central invariant of the single-mutex design: after every name
+// is invalidated, no LRU entry is orphaned from the index — i.e. invalidation
+// can always find and drop a cached entry. Before the fix, a Set racing an
+// invalidation could leave a live, unreachable entry behind.
+func TestConcurrentSetInvalidateNoStaleSurvivors(t *testing.T) {
+	c, err := New[string](256)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const workers = 8
+	const iters = 3000
+	names := []string{"alpha", "bravo", "charlie", "delta"}
+	sel := func(i int) string { return fmt.Sprintf("s%d", i%4) }
+
+	var wg sync.WaitGroup
+	for w := 0; w < workers; w++ {
+		wg.Add(1)
+		go func(seed int) {
+			defer wg.Done()
+			for i := 0; i < iters; i++ {
+				n := names[(seed+i)%len(names)]
+				k := Key{Name: n, Type: "A", Selector: sel(i)}
+				c.Set(k, "v", time.Minute)
+				c.Get(k)
+			}
+		}(w)
+	}
+	for w := 0; w < workers; w++ {
+		wg.Add(1)
+		go func(seed int) {
+			defer wg.Done()
+			for i := 0; i < iters; i++ {
+				n := names[(seed+i)%len(names)]
+				if i%2 == 0 {
+					c.InvalidateName(n)
+				} else {
+					c.HandleEvent(chain.RecordEvent{Kind: chain.EventTransferred, NameHash: nameHash(n)})
+				}
+			}
+		}(w)
+	}
+	wg.Wait()
+
+	for _, n := range names {
+		c.InvalidateName(n)
+	}
+	for _, n := range names {
+		for i := 0; i < 4; i++ {
+			if _, ok := c.Get(Key{Name: n, Type: "A", Selector: sel(i)}); ok {
+				t.Fatalf("entry for %s/%s survived final invalidation (orphaned from index)", n, sel(i))
+			}
+		}
+	}
+	c.mu.Lock()
+	leftNames, leftHashes := len(c.nameKeys), len(c.hashNames)
+	c.mu.Unlock()
+	if leftNames != 0 || leftHashes != 0 {
+		t.Fatalf("index not empty after full invalidation: nameKeys=%d hashNames=%d", leftNames, leftHashes)
+	}
+	if n := c.lru.Len(); n != 0 {
+		t.Fatalf("lru not empty after full invalidation: %d entries", n)
 	}
 }
 
