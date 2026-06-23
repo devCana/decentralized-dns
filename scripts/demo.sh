@@ -39,19 +39,23 @@ wait_for() { # url, name
   exit 1
 }
 
+wait_rpc() { # JSON-RPC is POST-only, so probe with eth_chainId
+  for _ in $(seq 1 120); do
+    if curl -fsS -X POST "$RPC_URL" -H 'content-type: application/json' \
+        --data '{"jsonrpc":"2.0","id":1,"method":"eth_chainId"}' >/dev/null 2>&1; then return 0; fi
+    sleep 0.5
+  done
+  echo "timed out waiting for the hardhat node" >&2
+  exit 1
+}
+
 step "1/7  install + compile contracts"
 ( cd "$CONTRACTS" && npm install --silent && npx hardhat compile )
 
 step "2/7  start local Hardhat chain"
 ( cd "$CONTRACTS" && npx hardhat node --hostname 127.0.0.1 >"$WORK/chain.log" 2>&1 ) &
 PIDS+=($!)
-wait_for "$RPC_URL" "hardhat node" || true
-# eth_chainId probe (curl on a JSON-RPC POST endpoint)
-for _ in $(seq 1 60); do
-  if curl -fsS -X POST "$RPC_URL" -H 'content-type: application/json' \
-      --data '{"jsonrpc":"2.0","id":1,"method":"eth_chainId"}' >/dev/null 2>&1; then break; fi
-  sleep 0.5
-done
+wait_rpc
 
 step "3/7  deploy + seed contracts"
 ( cd "$CONTRACTS" && npx hardhat run scripts/deploy.ts --network localhost )

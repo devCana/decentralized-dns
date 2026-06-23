@@ -127,7 +127,8 @@ decentralized-dns/
 │       ├── query/             # query parsing/normalization
 │       └── config/            # environment configuration
 ├── docs/                      # design documentation (Markdown)
-├── docker-compose.yml         # local chain + resolver topology
+├── scripts/demo.sh            # one-command end-to-end demo
+├── docker-compose.yml         # local Hardhat chain for development
 └── Makefile                   # build / test / deploy / demo targets
 ```
 
