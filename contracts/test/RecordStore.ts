@@ -202,6 +202,26 @@ describe("RecordSchemaRegistry + record store", () => {
 			expect(rec.fieldValues).to.deep.equal(["9.9.9.9"])
 			expect(await dapp.listRecords("example")).to.have.length(1)
 		})
+
+		it("hides the previous owner's records after transfer (UC-3 safety)", async () => {
+			const { dapp, alice, bob } = await loadFixture(deployFixture)
+			await dapp.connect(alice).setRecord("example", "A", "", ["address"], ["1.2.3.4"], 60, SIG, NO_COMMIT)
+			expect((await dapp.lookup("example", "A", "")).exists).to.equal(true)
+
+			// alice transfers to bob: her record was signed under her key and can
+			// never verify against bob's, so the generation bump must make it
+			// invisible — a resolver must not serve an unverifiable record.
+			await dapp.connect(alice).transfer("example", bob.address, PUBKEY2)
+			expect((await dapp.lookup("example", "A", "")).exists).to.equal(false)
+			expect(await dapp.listRecords("example")).to.have.length(0)
+
+			// bob re-creates the record under his key; now it resolves again.
+			await dapp.connect(bob).setRecord("example", "A", "", ["address"], ["5.6.7.8"], 60, SIG, NO_COMMIT)
+			const rec = await dapp.lookup("example", "A", "")
+			expect(rec.exists).to.equal(true)
+			expect(rec.fieldValues).to.deep.equal(["5.6.7.8"])
+			expect(await dapp.listRecords("example")).to.have.length(1)
+		})
 	})
 
 	describe("resolve()", () => {
