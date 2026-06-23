@@ -10,39 +10,55 @@
 [![Solidity ^0.8.28](https://img.shields.io/badge/Solidity-%5E0.8.28-363636.svg)](https://soliditylang.org/)
 
 Decentralized DNS replaces the centrally-administered DNS + X.509 stack with three
-cooperating decentralized tiers:
+cooperating decentralized tiers — a **Solidity dApp** for the namespace registry and typed
+record store, a **Go resolver** that caches and cryptographically verifies every answer,
+and the **BitTorrent swarm** for bulk content. The only trusted authorities are blockchain
+consensus and each domain owner's private key: a resolver can never forge or tamper with
+an answer without the client detecting it.
 
-- a **Solidity dApp** that owns the namespace registry, the typed record store, and a
-  dynamic record-type schema registry;
-- a **Go resolver server** that answers REST/UDP queries through a TTL cache, reads the
-  chain on a miss, verifies owner signatures, generates zero-knowledge proofs, and serves
-  BitTorrent-hosted files only after re-hashing them against the on-chain hash;
-- the **BitTorrent swarm**, which stores bulk static content that is too large (and too
-  expensive) to keep on-chain.
-
-The only trusted authorities are the blockchain consensus itself and each domain owner's
-private key. A resolver can never forge or tamper with an answer without being detected
-by the client.
+Built end-to-end — smart contracts, a production-style Go server, a hand-rolled binary
+wire protocol, zero-knowledge proofs, a P2P content layer, and three CLIs — with tests, CI,
+and a one-command demo.
 
 ---
 
-## Table of contents
+## Highlights
 
-- [Architecture](#architecture)
-- [Features](#features)
-- [Repository layout](#repository-layout)
-- [Quick start](#quick-start)
-- [Resolver REST API](#resolver-rest-api)
-- [UDP query protocol](#udp-query-protocol)
-- [Command-line tools](#command-line-tools)
-- [Smart contracts](#smart-contracts)
-- [Security & trust model](#security--trust-model)
-- [Development](#development)
-- [Documentation](#documentation)
-- [Project status](#project-status)
-- [Authors & license](#authors--license)
+- **Zero-knowledge proofs.** A [gnark](https://github.com/consensys/gnark) Groth16 circuit
+  proves each served record matches its on-chain MiMC commitment — verified both
+  client-side and on-chain (`ZKVerifier.sol`).
+- **Native PKI, no certificate authorities.** Domain owners sign records with secp256k1
+  (EIP-191); the resolver signs every response with an ed25519 identity. Clients
+  **re-verify both** and never trust the resolver.
+- **Content-addressed P2P storage.** Large files live on BitTorrent; the resolver re-hashes
+  every payload (SHA-256) against the chain before serving, so a tampered file can never
+  reach a client.
+- **Two front ends.** A JSON REST API *and* a hand-rolled compact **binary UDP protocol**
+  (custom TLV framing) for low-latency lookups.
+- **Real systems engineering.** TTL + LRU caching with event-driven invalidation, RPC
+  retry/back-off, per-IP rate limiting, graceful shutdown, and a concurrency-tested cache.
+- **Tested & reproducible.** 35 contract tests plus Go unit/concurrency tests (run under
+  `-race`), CI on every push, and `make demo` for a full local end-to-end run.
 
----
+## Demo
+
+```console
+$ make demo   # boots a local chain, deploys + seeds, starts the resolver, drives the CLIs
+
+== resolve a record and verify it end-to-end (ddns-lookup) ==
+resolver:  0x055b…470f (envelope signature OK)
+owner:     0x7099…79C8
+record:    A address=93.184.216.34 (ttl=3600s)
+owner sig: OK (recovered to on-chain pubKey + owner address)
+zk proof:  OK (Groth16 commitment proof verifies)
+
+== publish a static file, then fetch it back over BitTorrent ==
+seeded site.html: infoHash=f726b029… sha256=7cd536fc… contentType=text/html
+ddns-fetch: wrote 67 verified bytes to site.html   (SHA-256 + resolver provenance OK)
+```
+
+Every line above is checked by the client itself — the resolver's identity signature, the
+domain owner's record signature, the zero-knowledge proof, and the file's SHA-256.
 
 ## Architecture
 
@@ -312,10 +328,11 @@ every push and pull request.
 
 ## Project status
 
-This is an academic project built to demonstrate a working decentralized DNS + PKI. The
-contracts and resolver are feature-complete for the implemented scope (all main and
-secondary features above), with passing test suites on both sides. The resolver-incentive
-economic model and native browser integration are intentionally out of scope.
+A complete, working decentralized DNS + PKI, built as a university project. Both the
+contracts and the resolver are feature-complete for the implemented scope (every main and
+secondary feature above), with passing test suites on both sides and a verified end-to-end
+`make demo`. The resolver-incentive economic model and native browser integration are
+intentionally out of scope and documented as nice-to-haves.
 
 ## Authors & license
 
