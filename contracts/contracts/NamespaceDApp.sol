@@ -207,7 +207,10 @@ contract NamespaceDApp {
     }
 
     /// @notice Transfer an active domain, atomically rewriting owner and
-    ///         pubKey (UC-3). Historical records remain on-chain.
+    ///         pubKey (UC-3). The generation bump stops the previous owner's
+    ///         records from resolving: they were signed under the old key and
+    ///         can never verify against the new owner/pubKey. The new owner
+    ///         re-creates (re-signs) any records they wish to keep.
     function transfer(
         string calldata name,
         address newOwner,
@@ -225,6 +228,11 @@ contract NamespaceDApp {
         address oldOwner = d.owner;
         d.owner = newOwner;
         d.pubKey = newPubKey;
+        // Bump generation so the previous owner's records (signed under the
+        // old key) immediately stop resolving and cannot be served as valid.
+        unchecked {
+            d.generation += 1;
+        }
 
         emit Transferred(h, oldOwner, newOwner, newPubKey);
     }
