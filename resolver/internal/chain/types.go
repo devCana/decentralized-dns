@@ -24,10 +24,14 @@ type Record struct {
 	Exists     bool     `json:"exists"`
 }
 
-// Field returns the value of a named field and whether it is present.
+// Field returns the value of a named field and whether it is present. It
+// tolerates malformed chain data where the name/value arrays differ in length.
 func (r *Record) Field(name string) (string, bool) {
 	for i, n := range r.FieldNames {
 		if n == name {
+			if i >= len(r.FieldVals) {
+				return "", false
+			}
 			return r.FieldVals[i], true
 		}
 	}

@@ -67,6 +67,10 @@ func (s *Server) proveRecord(name string, rec chain.Record) []byte {
 	if rec.Commitment == ([32]byte{}) {
 		return nil
 	}
+	if len(rec.FieldNames) != len(rec.FieldVals) {
+		s.log.Warn("record field arrays length mismatch", "name", name, "type", rec.Type)
+		return nil
+	}
 	msg := pki.RecordMessage(name, rec)
 	com, err := zk.Commitment(msg)
 	if err != nil {

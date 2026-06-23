@@ -16,8 +16,14 @@ import (
 	"github.com/consensys/gnark-crypto/ecc/bn254/fr"
 	gcmimc "github.com/consensys/gnark-crypto/ecc/bn254/fr/mimc"
 	"github.com/consensys/gnark/frontend"
+	"github.com/consensys/gnark/logger"
 	"github.com/consensys/gnark/std/hash/mimc"
 )
+
+// gnark emits a DBG line to stderr on every prove/verify. Silence it so the
+// resolver (slog) and the CLIs produce clean output; we log what matters
+// ourselves.
+func init() { logger.Disable() }
 
 const (
 	// ChunkSize is bytes per field element (31 < 254-bit BN254 scalar).

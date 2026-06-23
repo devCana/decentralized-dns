@@ -37,7 +37,7 @@ func TestSeedAndFetchVerifiesSHA256(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	infoHash, digest, err := seed.SeedFile(file)
+	infoHash, digest, err := seed.SeedFile(context.Background(), file)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -69,7 +69,7 @@ func TestFetchRejectsTamperedResource(t *testing.T) {
 	if err := os.WriteFile(file, payload, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	infoHash, _, err := seed.SeedFile(file)
+	infoHash, _, err := seed.SeedFile(context.Background(), file)
 	if err != nil {
 		t.Fatal(err)
 	}

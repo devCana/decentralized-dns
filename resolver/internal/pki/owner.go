@@ -61,6 +61,9 @@ func RecordMessage(name string, r chain.Record) []byte {
 // the canonical record message by the on-chain identity: the recovered
 // key must equal the registered pubKey and hash to the owner address.
 func VerifyOwnerSig(name string, r chain.Record, owner common.Address, pubKey []byte) error {
+	if len(r.FieldNames) != len(r.FieldVals) {
+		return fmt.Errorf("%w: field name/value arrays differ in length (%d vs %d)", ErrBadSignature, len(r.FieldNames), len(r.FieldVals))
+	}
 	if len(r.OwnerSig) != crypto.SignatureLength {
 		return fmt.Errorf("%w: want %d-byte sig, got %d", ErrBadSignature, crypto.SignatureLength, len(r.OwnerSig))
 	}
