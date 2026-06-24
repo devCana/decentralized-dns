@@ -178,10 +178,12 @@ make chain                 # in a separate terminal — runs `hardhat node`
 make deploy-localhost      # writes contracts/deployments/localhost.json
 make seed-localhost        # registers a demo domain + records
 
-# 2. Resolver: configure and run
+# 2. Resolver: run it — contract addresses are auto-detected from the deploy
+#    artifact (contracts/deployments/localhost.json), so no config is needed.
 cd resolver
-cp .env.example .env       # set CONTRACT_ADDRESS / REGISTRY_ADDRESS from the deploy output
 go run ./cmd/resolver
+#    To override ports, rate limits, etc., `cp .env.example .env` and edit it;
+#    a local .env is loaded automatically.
 
 # 3. Query it
 curl 'http://localhost:8080/resolve?name=example&type=A'
