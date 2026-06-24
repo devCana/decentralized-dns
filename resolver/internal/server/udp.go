@@ -12,10 +12,10 @@ import (
 )
 
 const (
-	udpVersion   = 1
-	udpMaxPacket = 8192  // request read buffer (queries are tiny)
-	udpMaxResp   = 65000 // responses larger than this fall back to REST
-	udpMaxInFlight = 256 // bound concurrent query handlers
+	udpVersion     = 1
+	udpMaxPacket   = 8192  // request read buffer (queries are tiny)
+	udpMaxResp     = 65000 // responses larger than this fall back to REST
+	udpMaxInFlight = 256   // bound concurrent query handlers
 
 	udpTLVName     = 1
 	udpTLVType     = 2

@@ -310,6 +310,9 @@ ddns-fetch example --selector service=HTTP -o site.html   # fetch + verify to di
 ```bash
 make build            # compile contracts + resolver
 make test             # hardhat tests + go vet + go test
+make race             # Go suite under the race detector (CI runs this)
+make cover            # resolver coverage report
+make fmt              # gofmt -w (CI fails on unformatted code)
 make contracts-test   # Hardhat suite only
 make resolver-test    # go vet ./... && go test ./...
 make bindings         # regenerate Go contract bindings (abigen)
@@ -317,8 +320,11 @@ make zk-setup         # regenerate the Groth16 artifacts + verifier (dev only)
 make clean
 ```
 
-CI (`.github/workflows/ci.yml`) compiles and tests both the contracts and the resolver on
-every push and pull request.
+CI (`.github/workflows/ci.yml`) compiles both sides, enforces `gofmt`, and runs the
+contract suite plus the Go suite under `-race` with a coverage summary on every push and
+pull request. The cryptographic core is held to negative-path coverage: signing and
+envelope formats ship with tamper tests proving a mutated field invalidates the signature.
+See [CONTRIBUTING.md](./CONTRIBUTING.md) for the local dev loop.
 
 ## Documentation
 

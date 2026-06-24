@@ -1,6 +1,6 @@
 .PHONY: all build test clean contracts-install contracts-build contracts-test \
         resolver-build resolver-test deploy-localhost seed-localhost chain \
-        bindings zk-setup demo
+        bindings zk-setup demo fmt race cover
 
 all: build
 
@@ -43,6 +43,22 @@ resolver-build:
 
 resolver-test:
 	cd resolver && go vet ./... && go test ./...
+
+# Format Go sources (matches the CI gofmt gate).
+fmt:
+	cd resolver && gofmt -w .
+
+# Run the Go suite under the race detector (mirrors CI).
+race:
+	cd resolver && go test -race ./...
+
+# Resolver logic coverage: internal/ packages across the whole suite,
+# excluding the generated contract bindings (mirrors the CI summary).
+cover:
+	cd resolver && go test -coverpkg=./internal/... -coverprofile=coverage.out ./... \
+		&& grep -v 'internal/chain/bindings/' coverage.out > coverage.filtered \
+		&& go tool cover -func=coverage.filtered | tail -1 \
+		&& rm -f coverage.filtered
 
 clean:
 	rm -rf contracts/artifacts contracts/cache contracts/typechain-types resolver/bin

@@ -26,12 +26,12 @@ const eventPollInterval = 2 * time.Second
 
 // Server is the top-level resolver orchestrator.
 type Server struct {
-	cfg      *config.Config
-	log      *slog.Logger
-	chain    ChainReader
-	events   *chain.Client // event watcher; nil in handler tests
-	cache    *cache.TTLCache[*chain.ResolveResult]
-	bt       *bttorrent.Engine
+	cfg            *config.Config
+	log            *slog.Logger
+	chain          ChainReader
+	events         *chain.Client // event watcher; nil in handler tests
+	cache          *cache.TTLCache[*chain.ResolveResult]
+	bt             *bttorrent.Engine
 	resource       ResourceFetcher
 	identity       *pki.Identity
 	limiter        *ipLimiter
