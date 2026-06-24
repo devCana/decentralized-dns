@@ -23,6 +23,14 @@
       <code>ddns resolvers</code>.
     </p>
     <input id="resolver" placeholder="http://localhost:8080" />
+    <h1>Pinned resolver key (recommended)</h1>
+    <p class="k">
+      The resolver's ed25519 public key (<code>0x…</code>, from its <code>/admin</code> page or
+      <code>ddns resolvers</code>). When set, the popup only shows "verified" if the answer was
+      signed by <em>this</em> key — so a malicious or MITM'd resolver cannot fake a verified
+      result. Leave blank to verify the signature without pinning an identity.
+    </p>
+    <input id="resolverKey" placeholder="0x… (64 hex chars)" />
     <div>
       <button id="save">Save</button>
       <span id="saved"></span>
