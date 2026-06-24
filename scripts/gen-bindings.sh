@@ -12,7 +12,7 @@ trap 'rm -rf "$TMP"' EXIT
 (cd "$ROOT/contracts" && DO_NOT_TRACK=1 npx hardhat compile --quiet)
 
 mkdir -p "$OUT"
-for C in NamespaceDApp RecordSchemaRegistry ResolverRegistry; do
+for C in NamespaceDApp RecordSchemaRegistry ResolverRegistry ResolverIncentives; do
   node -e "
     const a = require('$ROOT/contracts/artifacts/contracts/$C.sol/$C.json');
     const fs = require('fs');
