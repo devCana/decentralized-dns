@@ -4,6 +4,8 @@
 package config
 
 import (
+	"bufio"
+	"encoding/json"
 	"fmt"
 	"os"
 	"strconv"
@@ -28,8 +30,12 @@ type Config struct {
 }
 
 // FromEnv builds a Config from the process environment, applying defaults
-// for everything except addresses, which stay empty until provided.
+// for everything except addresses. It first loads a local .env file (so
+// `cp .env.example .env` works as documented) and, if the contract addresses
+// are still unset, reads them from the deploy artifact written by
+// `make deploy-localhost` — making local startup zero-configuration.
 func FromEnv() (*Config, error) {
+	loadDotEnv(".env")
 	cfg := &Config{
 		RPCURL:          getEnv("RPC_URL", "http://127.0.0.1:8545"),
 		ContractAddress: os.Getenv("CONTRACT_ADDRESS"),
@@ -38,6 +44,15 @@ func FromEnv() (*Config, error) {
 		DataDir:         getEnv("DATA_DIR", "./data"),
 		AllowPeerHints:  getEnvBool("ALLOW_PEER_HINTS", false),
 		EnforceType:     getEnvBool("ENFORCE_CONTENT_TYPE", false),
+	}
+	if cfg.ContractAddress == "" || cfg.RegistryAddress == "" {
+		ns, reg := loadDeployments(getEnv("DEPLOYMENTS", "../contracts/deployments/localhost.json"))
+		if cfg.ContractAddress == "" {
+			cfg.ContractAddress = ns
+		}
+		if cfg.RegistryAddress == "" {
+			cfg.RegistryAddress = reg
+		}
 	}
 	var err error
 	if cfg.RESTPort, err = getEnvPort("REST_PORT", 8080); err != nil {
@@ -99,6 +114,59 @@ func getEnvPort(key string, def int) (int, error) {
 		return 0, fmt.Errorf("env %s: port %d out of range (1-65535)", key, n)
 	}
 	return n, nil
+}
+
+// loadDotEnv loads KEY=VALUE pairs from a .env file into the process
+// environment, skipping any key already set (real env vars win). A missing
+// file is not an error. Supports `#` comments, optional `export ` prefixes,
+// and single/double-quoted values.
+func loadDotEnv(path string) {
+	f, err := os.Open(path)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	sc := bufio.NewScanner(f)
+	for sc.Scan() {
+		line := strings.TrimSpace(sc.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		line = strings.TrimPrefix(line, "export ")
+		k, v, ok := strings.Cut(line, "=")
+		if !ok {
+			continue
+		}
+		k = strings.TrimSpace(k)
+		v = strings.Trim(strings.TrimSpace(v), `"'`)
+		if k == "" {
+			continue
+		}
+		if _, exists := os.LookupEnv(k); !exists {
+			_ = os.Setenv(k, v)
+		}
+	}
+}
+
+// loadDeployments reads the NamespaceDApp and RecordSchemaRegistry addresses
+// from a Hardhat deploy artifact (contracts/deployments/<network>.json), so a
+// local resolver needs no manual address copying. Missing/invalid file yields
+// empty strings, leaving the caller's validation to report the problem.
+func loadDeployments(path string) (namespace, registry string) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", ""
+	}
+	var doc struct {
+		Contracts struct {
+			NamespaceDApp        string `json:"NamespaceDApp"`
+			RecordSchemaRegistry string `json:"RecordSchemaRegistry"`
+		} `json:"contracts"`
+	}
+	if err := json.Unmarshal(data, &doc); err != nil {
+		return "", ""
+	}
+	return doc.Contracts.NamespaceDApp, doc.Contracts.RecordSchemaRegistry
 }
 
 func getEnvBool(key string, def bool) bool {

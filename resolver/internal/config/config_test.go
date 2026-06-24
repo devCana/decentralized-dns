@@ -1,6 +1,10 @@
 package config
 
-import "testing"
+import (
+	"os"
+	"path/filepath"
+	"testing"
+)
 
 func TestFromEnvDefaults(t *testing.T) {
 	cfg, err := FromEnv()
@@ -55,5 +59,49 @@ func TestFromEnvBoolFlags(t *testing.T) {
 	}
 	if !cfg.EnforceType || !cfg.AllowPeerHints {
 		t.Errorf("bool flags not parsed: peerHints=%v enforceType=%v", cfg.AllowPeerHints, cfg.EnforceType)
+	}
+}
+
+func TestLoadDotEnv(t *testing.T) {
+	path := filepath.Join(t.TempDir(), ".env")
+	contents := "# a comment\nexport DDNS_TEST_FOO=bar\nDDNS_TEST_QUOTED=\"baz\"\n\nDDNS_TEST_PRESET=fromfile\n"
+	if err := os.WriteFile(path, []byte(contents), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, k := range []string{"DDNS_TEST_FOO", "DDNS_TEST_QUOTED"} {
+		os.Unsetenv(k)
+		t.Cleanup(func() { os.Unsetenv(k) })
+	}
+	// A real env var must win over the file.
+	t.Setenv("DDNS_TEST_PRESET", "fromenv")
+
+	loadDotEnv(path)
+
+	if got := os.Getenv("DDNS_TEST_FOO"); got != "bar" {
+		t.Errorf("FOO = %q, want bar", got)
+	}
+	if got := os.Getenv("DDNS_TEST_QUOTED"); got != "baz" {
+		t.Errorf("QUOTED = %q, want baz (quotes stripped)", got)
+	}
+	if got := os.Getenv("DDNS_TEST_PRESET"); got != "fromenv" {
+		t.Errorf("PRESET = %q, want fromenv (real env must win)", got)
+	}
+	// A missing file is a silent no-op.
+	loadDotEnv(filepath.Join(t.TempDir(), "absent.env"))
+}
+
+func TestLoadDeployments(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "localhost.json")
+	doc := `{"contracts":{"NamespaceDApp":"0xNS","RecordSchemaRegistry":"0xREG","ZKVerifier":"0xZK"}}`
+	if err := os.WriteFile(path, []byte(doc), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ns, reg := loadDeployments(path)
+	if ns != "0xNS" || reg != "0xREG" {
+		t.Errorf("loadDeployments = %q,%q want 0xNS,0xREG", ns, reg)
+	}
+	if ns, reg := loadDeployments(filepath.Join(dir, "missing.json")); ns != "" || reg != "" {
+		t.Errorf("missing file should yield empty, got %q,%q", ns, reg)
 	}
 }
