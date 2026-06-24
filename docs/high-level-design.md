@@ -497,7 +497,7 @@ the file. Subsequent users hit the cache for one hour.
 ### User interfaces
 
 - **Domain Owner CLI** — command-line tool (`ddns register example`,
-  `ddns set example A 1.2.3.4`, `ddns publish-resource example ./site.zip`). Connects to a
+  `ddns set example A address=1.2.3.4`, `ddns publish-resource example ./site.zip`). Connects to a
   wallet (private key file or hardware wallet) to sign transactions; never sends keys to
   the resolver.
 - **Client lookup tool** — `ddns-lookup example A` (or programmatic SDK); for Resource
@@ -535,8 +535,8 @@ end-to-end query — used for grading and reproducibility.
 | ID | Title | Actor | Flow |
 |---|---|---|---|
 | **UC-1** | Register a new domain | Domain owner | Owner runs `ddns register example`; CLI builds and signs a transaction; contract verifies the name is free and the fee is paid; on success the registry maps `example` to the owner's address and public key. The domain is then owned and queryable globally. |
-| **UC-2** | Update a record | Domain owner | `ddns set example A 1.2.3.4` builds a `setRecord` transaction; the contract checks `msg.sender == owner` and writes the record, emitting `RecordSet`. Resolvers subscribed to events invalidate their caches. |
-| **UC-3** | Transfer ownership | Current owner | `ddns transfer example 0xNEW`; contract atomically rewrites owner and pubKey. The new owner controls all future updates; historical records are preserved on-chain. |
+| **UC-2** | Update a record | Domain owner | `ddns set example A address=1.2.3.4` builds a `setRecord` transaction; the contract checks `msg.sender == owner` and writes the record, emitting `RecordSet`. Resolvers subscribed to events invalidate their caches. |
+| **UC-3** | Transfer ownership | Current owner | `ddns transfer example 0xNEW --pubkey 0x04…`; contract atomically rewrites owner and pubKey. The new owner controls all future updates; on transfer the domain generation is bumped so the previous owner's signed records stop resolving. |
 | **UC-4** | Resolve a standard record (cached) | End client | Client queries the resolver; resolver returns a cached, signed answer in milliseconds. The client verifies the signature. |
 | **UC-5** | Resolve a standard record (cache miss) | End client | As UC-4, but the resolver consults the chain, verifies the owner's signature on the record, caches it for `ttl`, and returns it. |
 | **UC-6** | Resolve and download a Resource Reference | End client | Resolver looks up the on-chain `(infoHash, sha256)`, fetches the file via BitTorrent, recomputes the SHA hash, and returns the file only if it matches. |

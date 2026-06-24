@@ -38,8 +38,13 @@ type Server struct {
 	allowPeerHints bool
 	enforceType    bool
 	startTime      time.Time
+	resourceSem    chan struct{} // bounds concurrent (memory-heavy) resource fetches
 	mux            *http.ServeMux
 }
+
+// maxConcurrentResourceFetches caps how many resource downloads buffer at once;
+// each can hold up to MaxFetchBytes in RAM, so this bounds memory under load.
+const maxConcurrentResourceFetches = 8
 
 // New validates config and connects the subsystems.
 func New(ctx context.Context, cfg *config.Config, log *slog.Logger) (*Server, error) {
@@ -79,15 +84,17 @@ func New(ctx context.Context, cfg *config.Config, log *slog.Logger) (*Server, er
 // is exempt from rate limiting so orchestrators can poll freely.
 func (s *Server) registerRoutes() {
 	s.limiter = newIPLimiter(s.cfg.RateRPS, s.cfg.RateBurst)
+	s.resourceSem = make(chan struct{}, maxConcurrentResourceFetches)
 	s.mux.HandleFunc("GET /healthz", s.handleHealthz)
 	s.mux.HandleFunc("GET /resolve", s.rateLimited(s.handleResolve))
 	s.mux.HandleFunc("GET /resource", s.rateLimited(s.handleResource))
 	s.mux.HandleFunc("GET /web/{name}", s.rateLimited(s.handleWeb))
 	s.mux.HandleFunc("GET /domains/{name}", s.rateLimited(s.handleDomain))
 	s.mux.HandleFunc("GET /types", s.rateLimited(s.handleTypes))
-	// Operator console (HLD §4.3): infra endpoints, exempt from rate limiting.
-	s.mux.HandleFunc("GET /admin", s.handleAdmin)
-	s.mux.HandleFunc("GET /admin/stats", s.handleAdminStats)
+	// Operator console (HLD §4.3): rate-limited so /admin/stats can't be used to
+	// hammer the chain RPC, but no auth — bind it to a trusted network.
+	s.mux.HandleFunc("GET /admin", s.rateLimited(s.handleAdmin))
+	s.mux.HandleFunc("GET /admin/stats", s.rateLimited(s.handleAdminStats))
 }
 
 // Chain exposes the blockchain reader to sibling subsystems.
