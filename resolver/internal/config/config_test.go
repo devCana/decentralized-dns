@@ -37,3 +37,23 @@ func TestFromEnvOverridesAndErrors(t *testing.T) {
 		t.Error("expected error for non-integer UDP_PORT")
 	}
 }
+
+func TestFromEnvBoolFlags(t *testing.T) {
+	cfg, err := FromEnv()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.AllowPeerHints || cfg.EnforceType {
+		t.Errorf("bool flags should default to false: peerHints=%v enforceType=%v", cfg.AllowPeerHints, cfg.EnforceType)
+	}
+
+	t.Setenv("ENFORCE_CONTENT_TYPE", "true")
+	t.Setenv("ALLOW_PEER_HINTS", "1")
+	cfg, err = FromEnv()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.EnforceType || !cfg.AllowPeerHints {
+		t.Errorf("bool flags not parsed: peerHints=%v enforceType=%v", cfg.AllowPeerHints, cfg.EnforceType)
+	}
+}

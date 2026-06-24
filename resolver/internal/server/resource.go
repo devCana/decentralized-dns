@@ -11,6 +11,7 @@ import (
 
 	"github.com/ethereum/go-ethereum/common/hexutil"
 
+	"github.com/devCana/decentralized-dns/resolver/internal/contenttype"
 	"github.com/devCana/decentralized-dns/resolver/internal/pki"
 	"github.com/devCana/decentralized-dns/resolver/internal/query"
 	bttorrent "github.com/devCana/decentralized-dns/resolver/internal/torrent"
@@ -39,14 +40,113 @@ func parseResourceQuery(r *http.Request) (query.Query, error) {
 	return query.New(params.Get("name"), recordType, pairs)
 }
 
-// handleResource serves GET /resource?name=&selector=&peer=. It resolves a
-// ResourceRef, verifies the owner signature through HandleQuery, fetches the
-// torrent payload, and returns the exact verified bytes signed in headers.
-func (s *Server) handleResource(w http.ResponseWriter, r *http.Request) {
+// verifiedResource is the fully checked payload of a ResourceRef: the bytes,
+// every provenance field, and the content-type validation verdict.
+type verifiedResource struct {
+	body        []byte
+	owner       string
+	pubKeyHex   string
+	infoHash    string
+	sha         string
+	contentType string
+	zkHex       string
+	validation  contenttype.Result
+	ttl         uint32
+}
+
+// resourceError carries an HTTP status + machine code for a failed fetch.
+type resourceError struct {
+	status int
+	code   string
+	msg    string
+}
+
+// fetchVerifiedResource runs the full ResourceRef pipeline shared by the
+// /resource API and the /web gateway: resolve + owner-signature check via
+// HandleQuery, pull the bytes from BitTorrent (which re-hashes against the
+// on-chain sha256), then validate the served content type locally (FS §2.2).
+// It returns a nil *resourceError on success.
+func (s *Server) fetchVerifiedResource(ctx context.Context, q query.Query, peers []string) (*verifiedResource, *resourceError) {
 	if s.resource == nil {
-		writeError(w, http.StatusServiceUnavailable, "resource_engine_unavailable", "resource fetching is not enabled")
-		return
+		return nil, &resourceError{http.StatusServiceUnavailable, "resource_engine_unavailable", "resource fetching is not enabled"}
 	}
+	res, err := s.HandleQuery(ctx, q)
+	if err != nil {
+		return nil, &resourceError{http.StatusBadGateway, "chain_error", err.Error()}
+	}
+	if !res.Found() {
+		return nil, &resourceError{http.StatusNotFound, "no_match", "ResourceRef record was not found"}
+	}
+	if !res.Result.OwnerSigValid {
+		return nil, &resourceError{http.StatusBadGateway, "owner_signature_invalid", "ResourceRef owner signature failed verification"}
+	}
+
+	rec := res.Result.Record
+	infoHash, ok := rec.Field("infoHash")
+	if !ok || strings.TrimSpace(infoHash) == "" {
+		return nil, &resourceError{http.StatusBadGateway, "bad_resource_ref", "ResourceRef is missing infoHash"}
+	}
+	sha, ok := rec.Field("sha256")
+	if !ok || strings.TrimSpace(sha) == "" {
+		return nil, &resourceError{http.StatusBadGateway, "bad_resource_ref", "ResourceRef is missing sha256"}
+	}
+	contentType, ok := rec.Field("contentType")
+	if !ok || strings.TrimSpace(contentType) == "" {
+		contentType = "application/octet-stream"
+	}
+	if strings.ContainsAny(contentType, "\r\n") {
+		return nil, &resourceError{http.StatusBadGateway, "bad_resource_ref", "ResourceRef contentType is invalid"}
+	}
+
+	body, err := s.resource.Fetch(ctx, infoHash, sha, peers)
+	if err != nil {
+		switch {
+		case errors.Is(err, bttorrent.ErrHashMismatch):
+			return nil, &resourceError{http.StatusBadGateway, "resource_hash_mismatch", "torrent payload did not match on-chain sha256"}
+		case errors.Is(err, bttorrent.ErrTooLarge):
+			return nil, &resourceError{http.StatusBadGateway, "resource_too_large", err.Error()}
+		case errors.Is(err, context.DeadlineExceeded), errors.Is(err, context.Canceled):
+			return nil, &resourceError{http.StatusGatewayTimeout, "resource_timeout", err.Error()}
+		default:
+			return nil, &resourceError{http.StatusBadGateway, "resource_fetch_failed", err.Error()}
+		}
+	}
+
+	// Resource Type Validation (FS §2.2, HLD open issue #3): sniff the verified
+	// bytes locally and confirm they are consistent with the declared media
+	// type. By default a mismatch is flagged (header + log); in strict mode
+	// (ENFORCE_CONTENT_TYPE) the resolver refuses to serve it.
+	validation := contenttype.Validate(contentType, body)
+	if !validation.OK {
+		s.log.Warn("resource content-type mismatch", "name", q.Name,
+			"declared", validation.Declared, "detected", validation.Detected)
+		if s.enforceType {
+			return nil, &resourceError{http.StatusUnprocessableEntity, "content_type_mismatch", validation.Reason}
+		}
+	}
+
+	zkHex := ""
+	if len(res.Result.ZKProof) > 0 {
+		zkHex = hexutil.Encode(res.Result.ZKProof)
+	}
+	return &verifiedResource{
+		body:        body,
+		owner:       res.Result.Owner.Hex(),
+		pubKeyHex:   hexutil.Encode(res.Result.PubKey),
+		infoHash:    infoHash,
+		sha:         sha,
+		contentType: contentType,
+		zkHex:       zkHex,
+		validation:  validation,
+		ttl:         rec.TTL,
+	}, nil
+}
+
+// handleResource serves GET /resource?name=&selector=&peer=. It resolves a
+// ResourceRef, verifies it end-to-end, and returns the exact verified bytes
+// with a resolver signature binding the body to all provenance headers (so a
+// man-in-the-middle cannot rewrite any of them); ddns-fetch re-checks it all.
+func (s *Server) handleResource(w http.ResponseWriter, r *http.Request) {
 	q, err := parseResourceQuery(r)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_query", err.Error())
@@ -55,84 +155,44 @@ func (s *Server) handleResource(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), resourceFetchTimeout)
 	defer cancel()
 
-	res, err := s.HandleQuery(ctx, q)
-	if err != nil {
-		writeError(w, http.StatusBadGateway, "chain_error", err.Error())
-		return
-	}
-	if !res.Found() {
-		writeError(w, http.StatusNotFound, "no_match", "ResourceRef record was not found")
-		return
-	}
-	if !res.Result.OwnerSigValid {
-		writeError(w, http.StatusBadGateway, "owner_signature_invalid", "ResourceRef owner signature failed verification")
+	vr, rerr := s.fetchVerifiedResource(ctx, q, s.resourcePeers(r))
+	if rerr != nil {
+		writeError(w, rerr.status, rerr.code, rerr.msg)
 		return
 	}
 
-	rec := res.Result.Record
-	infoHash, ok := rec.Field("infoHash")
-	if !ok || strings.TrimSpace(infoHash) == "" {
-		writeError(w, http.StatusBadGateway, "bad_resource_ref", "ResourceRef is missing infoHash")
-		return
-	}
-	sha, ok := rec.Field("sha256")
-	if !ok || strings.TrimSpace(sha) == "" {
-		writeError(w, http.StatusBadGateway, "bad_resource_ref", "ResourceRef is missing sha256")
-		return
-	}
-	contentType, ok := rec.Field("contentType")
-	if !ok || strings.TrimSpace(contentType) == "" {
-		contentType = "application/octet-stream"
-	}
-	if strings.ContainsAny(contentType, "\r\n") {
-		writeError(w, http.StatusBadGateway, "bad_resource_ref", "ResourceRef contentType is invalid")
-		return
-	}
-
-	body, err := s.resource.Fetch(ctx, infoHash, sha, s.resourcePeers(r))
-	if err != nil {
-		switch {
-		case errors.Is(err, bttorrent.ErrHashMismatch):
-			writeError(w, http.StatusBadGateway, "resource_hash_mismatch", "torrent payload did not match on-chain sha256")
-		case errors.Is(err, bttorrent.ErrTooLarge):
-			writeError(w, http.StatusBadGateway, "resource_too_large", err.Error())
-		case errors.Is(err, context.DeadlineExceeded), errors.Is(err, context.Canceled):
-			writeError(w, http.StatusGatewayTimeout, "resource_timeout", err.Error())
-		default:
-			writeError(w, http.StatusBadGateway, "resource_fetch_failed", err.Error())
-		}
-		return
-	}
-
-	owner := res.Result.Owner.Hex()
-	pubKeyHex := hexutil.Encode(res.Result.PubKey)
-	zkHex := ""
-	if len(res.Result.ZKProof) > 0 {
-		zkHex = hexutil.Encode(res.Result.ZKProof)
-	}
-	// Sign a manifest binding the body to all provenance fields, so none of the
-	// X-DDNS-* headers can be tampered with in transit (verified by ddns-fetch).
+	// Sign a manifest binding the body to all provenance fields.
 	sig := hexutil.Encode(s.identity.Sign(
-		pki.ResourceManifest(owner, pubKeyHex, infoHash, sha, contentType, true, zkHex, body),
+		pki.ResourceManifest(vr.owner, vr.pubKeyHex, vr.infoHash, vr.sha, vr.contentType, true, vr.zkHex, vr.body),
 	))
 	h := w.Header()
-	h.Set("Content-Type", contentType)
+	h.Set("Content-Type", vr.contentType)
 	h.Set("X-DDNS-Resolver", s.identity.PublicKeyHex())
 	h.Set("X-DDNS-Sig-Scheme", "ddns-resource-v1")
 	h.Set("X-DDNS-Signature", sig)
-	h.Set("X-DDNS-Owner", owner)
-	h.Set("X-DDNS-PubKey", pubKeyHex)
-	h.Set("X-DDNS-InfoHash", infoHash)
-	h.Set("X-DDNS-SHA256", sha)
+	h.Set("X-DDNS-Owner", vr.owner)
+	h.Set("X-DDNS-PubKey", vr.pubKeyHex)
+	h.Set("X-DDNS-InfoHash", vr.infoHash)
+	h.Set("X-DDNS-SHA256", vr.sha)
 	h.Set("X-DDNS-OwnerSig-Verified", "true")
-	if zkHex != "" {
-		h.Set("X-DDNS-ZKProof", zkHex)
+	h.Set("X-DDNS-Content-Validation", validationStatus(vr.validation.OK))
+	h.Set("X-DDNS-Detected-Type", vr.validation.Detected)
+	if vr.zkHex != "" {
+		h.Set("X-DDNS-ZKProof", vr.zkHex)
 	}
-	if rec.TTL > 0 {
-		h.Set("Cache-Control", fmt.Sprintf("public, max-age=%d", rec.TTL))
+	if vr.ttl > 0 {
+		h.Set("Cache-Control", fmt.Sprintf("public, max-age=%d", vr.ttl))
 	}
 	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write(body)
+	_, _ = w.Write(vr.body)
+}
+
+// validationStatus maps a content-type verdict to a stable header token.
+func validationStatus(ok bool) string {
+	if ok {
+		return "ok"
+	}
+	return "mismatch"
 }
 
 // resourcePeers returns the client-supplied ?peer= hints, but only when the

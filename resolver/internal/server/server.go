@@ -36,6 +36,8 @@ type Server struct {
 	identity       *pki.Identity
 	limiter        *ipLimiter
 	allowPeerHints bool
+	enforceType    bool
+	startTime      time.Time
 	mux            *http.ServeMux
 }
 
@@ -68,7 +70,7 @@ func New(ctx context.Context, cfg *config.Config, log *slog.Logger) (*Server, er
 		return nil, err
 	}
 
-	s := &Server{cfg: cfg, log: log, chain: chainClient, events: chainClient, cache: ttlCache, bt: bt, resource: bt, identity: identity, allowPeerHints: cfg.AllowPeerHints, mux: http.NewServeMux()}
+	s := &Server{cfg: cfg, log: log, chain: chainClient, events: chainClient, cache: ttlCache, bt: bt, resource: bt, identity: identity, allowPeerHints: cfg.AllowPeerHints, enforceType: cfg.EnforceType, startTime: time.Now(), mux: http.NewServeMux()}
 	s.registerRoutes()
 	return s, nil
 }
@@ -80,8 +82,12 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("GET /healthz", s.handleHealthz)
 	s.mux.HandleFunc("GET /resolve", s.rateLimited(s.handleResolve))
 	s.mux.HandleFunc("GET /resource", s.rateLimited(s.handleResource))
+	s.mux.HandleFunc("GET /web/{name}", s.rateLimited(s.handleWeb))
 	s.mux.HandleFunc("GET /domains/{name}", s.rateLimited(s.handleDomain))
 	s.mux.HandleFunc("GET /types", s.rateLimited(s.handleTypes))
+	// Operator console (HLD §4.3): infra endpoints, exempt from rate limiting.
+	s.mux.HandleFunc("GET /admin", s.handleAdmin)
+	s.mux.HandleFunc("GET /admin/stats", s.handleAdminStats)
 }
 
 // Chain exposes the blockchain reader to sibling subsystems.

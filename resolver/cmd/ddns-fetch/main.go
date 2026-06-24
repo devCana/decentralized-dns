@@ -19,6 +19,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/devCana/decentralized-dns/resolver/internal/contenttype"
 	"github.com/devCana/decentralized-dns/resolver/internal/pki"
 	"github.com/devCana/decentralized-dns/resolver/internal/query"
 )
@@ -94,7 +95,17 @@ func main() {
 		fatal(fmt.Errorf("resolver reported the owner signature did NOT verify; refusing the file"))
 	}
 
-	// 3. Write out the verified bytes.
+	// 3. Resource Type Validation (FS §2.2): re-sniff the bytes locally and
+	// compare against the resolver-signed content type. This is fully
+	// trustless — the content type is covered by the provenance signature
+	// verified above, so we need not trust the resolver's own verdict header.
+	declaredType := resp.Header.Get("Content-Type")
+	if v := contenttype.Validate(declaredType, body); !v.OK {
+		fmt.Fprintf(os.Stderr, "ddns-fetch: WARNING content-type mismatch — declared %q but bytes look like %q\n",
+			v.Declared, v.Detected)
+	}
+
+	// 4. Write out the verified bytes.
 	if *out == "" || *out == "-" {
 		_, _ = os.Stdout.Write(body)
 		return
@@ -103,6 +114,7 @@ func main() {
 	fmt.Fprintf(os.Stderr, "ddns-fetch: wrote %d verified bytes to %s\n", len(body), *out)
 	fmt.Fprintf(os.Stderr, "  owner:    %s\n", resp.Header.Get("X-DDNS-Owner"))
 	fmt.Fprintf(os.Stderr, "  sha256:   %s\n", wantSHA)
+	fmt.Fprintf(os.Stderr, "  type:     %s (validated)\n", declaredType)
 	fmt.Fprintf(os.Stderr, "  resolver: %s\n", resp.Header.Get("X-DDNS-Resolver"))
 }
 

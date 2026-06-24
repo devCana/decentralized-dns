@@ -24,6 +24,7 @@ type Config struct {
 	RateBurst       int    // per-IP REST burst allowance
 	DataDir         string // scratch dir for torrent data
 	AllowPeerHints  bool   // honour client-supplied ?peer= hints on /resource
+	EnforceType     bool   // reject /resource bytes that mismatch the declared content type
 }
 
 // FromEnv builds a Config from the process environment, applying defaults
@@ -36,6 +37,7 @@ func FromEnv() (*Config, error) {
 		KeystorePath:    getEnv("RESOLVER_KEYSTORE", "resolver.key"),
 		DataDir:         getEnv("DATA_DIR", "./data"),
 		AllowPeerHints:  getEnvBool("ALLOW_PEER_HINTS", false),
+		EnforceType:     getEnvBool("ENFORCE_CONTENT_TYPE", false),
 	}
 	var err error
 	if cfg.RESTPort, err = getEnvPort("REST_PORT", 8080); err != nil {

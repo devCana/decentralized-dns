@@ -92,7 +92,7 @@ ddns set example MX --ttl 300 host=mail.example priority=10
 echo
 ddns-lookup example MX
 
-step "7/7  publish a static file + fetch it verified over BitTorrent"
+step "7/8  publish a static file + fetch it verified over BitTorrent"
 echo '<!doctype html><title>Decentralized DNS</title><h1>served from BitTorrent, verified on-chain</h1>' >"$WORK/site.html"
 ddns publish-resource example "$WORK/site.html" --selector "service=HTTP" \
   --bt-port "$PUBLISH_PORT" --data-dir "$WORK/seed" --seconds 30 >"$WORK/publish.log" 2>&1 &
@@ -103,9 +103,19 @@ if ddns-fetch example --selector "service=HTTP" --peer "127.0.0.1:$PUBLISH_PORT"
     --timeout 60s -o "$WORK/fetched.html"; then
   echo "--- fetched, verified file ---"
   cat "$WORK/fetched.html"
+
+  step "7b   browser gateway (/web) renders the same verified site"
+  echo "GET $REST/web/example — exactly what a browser would receive:"
+  curl -fsS "$REST/web/example" || echo "(gateway warm-up pending)"
+  echo
 else
   echo "(resource fetch did not complete in time — see $WORK/publish.log; the on-chain anchor + record resolution above are the core demo)"
 fi
+
+step "8/8  operator console snapshot (/admin/stats)"
+echo "live resolver stats — cache, chain head, swarm health, identity:"
+curl -fsS "$REST/admin/stats"
+echo
 
 step "demo complete"
 echo "All responses above were verified client-side: resolver identity signature,"
