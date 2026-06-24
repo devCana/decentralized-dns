@@ -31,6 +31,13 @@ contract ResolverIncentives {
     }
 
     uint64 public constant MIN_DURATION = 1 hours;
+    /// @notice Grace period after expiry during which the resolver can still
+    ///         settle vouchers before the client may reclaim — so a briefly
+    ///         offline resolver cannot lose funds it has already earned.
+    uint64 public constant SETTLEMENT_WINDOW = 1 hours;
+    /// @notice secp256k1 N/2; reject high-s signatures (EIP-2 malleability).
+    uint256 private constant HALF_N =
+        0x7FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF5D576E7357A4501DDFE92F46681B20A0;
 
     mapping(bytes32 => Channel) public channels;
     uint256 private _nonce;
@@ -100,7 +107,9 @@ contract ResolverIncentives {
         Channel storage ch = channels[id];
         if (ch.client == address(0)) revert NoChannel();
         if (msg.sender != ch.client) revert NotClient();
-        if (block.timestamp < ch.expiresAt) revert NotExpired();
+        if (block.timestamp < uint256(ch.expiresAt) + SETTLEMENT_WINDOW) {
+            revert NotExpired();
+        }
 
         uint256 refund = ch.deposit - ch.claimed;
         delete channels[id];
@@ -140,6 +149,9 @@ contract ResolverIncentives {
             v := byte(0, calldataload(add(sig.offset, 64)))
         }
         if (v < 27) v += 27;
-        return ecrecover(voucherDigest(id, cumulative), v, r, s);
+        if (uint256(s) > HALF_N) revert BadVoucher(); // reject malleable high-s
+        address signer = ecrecover(voucherDigest(id, cumulative), v, r, s);
+        if (signer == address(0)) revert BadVoucher();
+        return signer;
     }
 }

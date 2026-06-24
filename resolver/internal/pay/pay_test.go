@@ -49,3 +49,29 @@ func TestVoucherSignRecoverRoundTrip(t *testing.T) {
 		t.Error("voucher verified against a different contract")
 	}
 }
+
+func TestRecoverVoucherRejectsHighS(t *testing.T) {
+	key, err := crypto.GenerateKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	contract := common.HexToAddress("0x000000000000000000000000000000000000c0de")
+	var id [32]byte
+	amount := big.NewInt(100)
+
+	sig, err := SignVoucher(key, contract, id, amount) // canonical low-s
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Malleate into the equivalent high-s signature: s' = N - s, flip v.
+	n := crypto.S256().Params().N
+	sPrime := new(big.Int).Sub(n, new(big.Int).SetBytes(sig[32:64]))
+	mal := make([]byte, 65)
+	copy(mal, sig[:32])
+	copy(mal[32:64], common.LeftPadBytes(sPrime.Bytes(), 32))
+	mal[64] = sig[64] ^ 1
+
+	if _, err := RecoverVoucher(contract, id, amount, mal); err == nil {
+		t.Error("non-canonical high-s voucher must be rejected")
+	}
+}
