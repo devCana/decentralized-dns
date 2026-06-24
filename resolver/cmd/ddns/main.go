@@ -70,6 +70,14 @@ func main() {
 		cmdResolvers(args)
 	case "withdraw":
 		cmdWithdraw(args)
+	case "channel-open":
+		cmdChannelOpen(args)
+	case "voucher":
+		cmdVoucher(args)
+	case "channel-claim":
+		cmdChannelClaim(args)
+	case "channel-close":
+		cmdChannelClose(args)
 	case "-h", "--help", "help":
 		usage()
 	default:
@@ -93,6 +101,12 @@ usage:
   ddns announce-resolver --endpoint URL [--pubkey 0x<64hex>]
   ddns resolvers
   ddns withdraw [--to ADDR]            (treasurer: withdraw collected fees)
+
+pay-per-query micropayment channels (FS §2.3):
+  ddns channel-open --resolver-operator ADDR --amount ETH   (client funds a resolver)
+  ddns voucher --channel ID --amount ETH                    (client signs a per-query voucher)
+  ddns channel-claim --channel ID --amount ETH --voucher 0x (resolver redeems on-chain)
+  ddns channel-close --channel ID                           (client reclaims after expiry)
 
 common flags (all subcommands):
   --rpc URL           blockchain RPC (env RPC_URL, default http://127.0.0.1:8545)

@@ -41,6 +41,12 @@ async function main() {
 	deployed.ResolverRegistry = await resolvers.getAddress()
 	console.log(`ResolverRegistry deployed at ${deployed.ResolverRegistry}`)
 
+	// Pay-per-query micropayment channels rewarding resolvers (FS §2.3).
+	const incentives = await (await ethers.getContractFactory("ResolverIncentives")).deploy()
+	await incentives.waitForDeployment()
+	deployed.ResolverIncentives = await incentives.getAddress()
+	console.log(`ResolverIncentives deployed at ${deployed.ResolverIncentives}`)
+
 	const outDir = path.join(__dirname, "..", "deployments")
 	fs.mkdirSync(outDir, { recursive: true })
 	const outFile = path.join(outDir, `${network.name}.json`)

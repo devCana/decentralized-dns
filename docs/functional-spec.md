@@ -85,8 +85,11 @@ on the blockchain ledger.
 
 - **Resolver Incentive Mechanism:** A system rewarding resolver servers financially based
   on their query volume.
-  *Reason not implemented:* Designing an exploit-free economic model requires substantial
-  time and extends beyond the core networking requirements.
+  *Implemented:* pay-per-query micropayment channels (`ResolverIncentives`). Rather than a
+  gameable "proof of volume", clients pay for the queries they make via off-chain vouchers
+  the resolver settles on-chain — so payment *is* the proof of work and there is nothing to
+  forge. See [docs/incentives.md](./incentives.md) for the model and its boundaries (it is
+  a settlement primitive, not a full tokenomic economy).
 - **Decentralized Web Browsing Integration:** Configuring a standard web browser to
   natively resolve and render decentralized static websites through the custom
   infrastructure.
