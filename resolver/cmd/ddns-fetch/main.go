@@ -91,6 +91,10 @@ func main() {
 	); err != nil {
 		fatal(fmt.Errorf("resolver provenance signature INVALID: %w", err))
 	}
+	// The owner-signature verdict is performed by the resolver and bound into
+	// the manifest signature above (so it can't be flipped in transit), but
+	// ddns-fetch does not re-recover the owner sig itself — run `ddns-lookup` on
+	// the ResourceRef for independent owner-signature + ZK verification.
 	if !ownerVerified {
 		fatal(fmt.Errorf("resolver reported the owner signature did NOT verify; refusing the file"))
 	}

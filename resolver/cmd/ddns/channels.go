@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"math/big"
 	"os"
+	"regexp"
+	"strings"
 	"time"
 
 	"github.com/ethereum/go-ethereum/accounts/abi/bind"
@@ -169,15 +171,25 @@ func mustChannelID(s string) [32]byte {
 	return id
 }
 
-// mustEth converts a decimal ETH amount to wei exactly (no float), or aborts.
+var decimalEth = regexp.MustCompile(`^\d+(\.\d+)?$`)
+
+// mustEth converts a plain decimal ETH amount to wei exactly (no float), or
+// aborts. It rejects hex/fraction/scientific forms that big.Rat would happily
+// misparse (e.g. "0x10" → 16 ETH, "1/3", "1e3"), and rejects amounts that
+// underflow to 0 wei.
 func mustEth(s string) *big.Int {
+	s = strings.TrimSpace(s)
 	if s == "" {
 		fatal(errors.New("--amount is required (ETH, e.g. 0.05)"))
 	}
-	r, ok := new(big.Rat).SetString(s)
-	if !ok || r.Sign() < 0 {
-		fatal(fmt.Errorf("invalid --amount %q", s))
+	if !decimalEth.MatchString(s) {
+		fatal(fmt.Errorf("invalid --amount %q: want a decimal number of ETH, e.g. 0.05", s))
 	}
+	r, _ := new(big.Rat).SetString(s)
 	r.Mul(r, new(big.Rat).SetInt(new(big.Int).Exp(big.NewInt(10), big.NewInt(18), nil)))
-	return new(big.Int).Quo(r.Num(), r.Denom()) // floor to whole wei
+	wei := new(big.Int).Quo(r.Num(), r.Denom()) // floor to whole wei
+	if wei.Sign() == 0 {
+		fatal(fmt.Errorf("--amount %q is below 1 wei", s))
+	}
+	return wei
 }

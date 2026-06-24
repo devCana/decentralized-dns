@@ -98,6 +98,17 @@ func (s *Server) fetchVerifiedResource(ctx context.Context, q query.Query, peers
 		return nil, &resourceError{http.StatusBadGateway, "bad_resource_ref", "ResourceRef contentType is invalid"}
 	}
 
+	// Bound concurrent fetches: each buffers up to MaxFetchBytes in RAM, so an
+	// unbounded fan-out is a memory-exhaustion DoS even within the rate limit.
+	if s.resourceSem != nil {
+		select {
+		case s.resourceSem <- struct{}{}:
+			defer func() { <-s.resourceSem }()
+		case <-ctx.Done():
+			return nil, &resourceError{http.StatusServiceUnavailable, "resource_busy", "resolver is busy serving resources; retry shortly"}
+		}
+	}
+
 	body, err := s.resource.Fetch(ctx, infoHash, sha, peers)
 	if err != nil {
 		switch {
@@ -167,6 +178,7 @@ func (s *Server) handleResource(w http.ResponseWriter, r *http.Request) {
 	))
 	h := w.Header()
 	h.Set("Content-Type", vr.contentType)
+	h.Set("X-Content-Type-Options", "nosniff") // honour the owner-declared type exactly
 	h.Set("X-DDNS-Resolver", s.identity.PublicKeyHex())
 	h.Set("X-DDNS-Sig-Scheme", "ddns-resource-v1")
 	h.Set("X-DDNS-Signature", sig)
