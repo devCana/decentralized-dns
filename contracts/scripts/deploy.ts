@@ -35,6 +35,12 @@ async function main() {
 	deployed.ZKVerifier = await verifier.getAddress()
 	console.log(`ZKVerifier deployed at ${deployed.ZKVerifier}`)
 
+	// On-chain resolver directory for client bootstrap/discovery (HLD issue 7).
+	const resolvers = await (await ethers.getContractFactory("ResolverRegistry")).deploy()
+	await resolvers.waitForDeployment()
+	deployed.ResolverRegistry = await resolvers.getAddress()
+	console.log(`ResolverRegistry deployed at ${deployed.ResolverRegistry}`)
+
 	const outDir = path.join(__dirname, "..", "deployments")
 	fs.mkdirSync(outDir, { recursive: true })
 	const outFile = path.join(outDir, `${network.name}.json`)
