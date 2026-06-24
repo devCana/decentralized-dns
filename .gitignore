@@ -15,6 +15,11 @@ resolver/dist/
 resolver/coverage.out
 resolver/coverage.filtered
 resolver/data/
+# stray binaries from `go build ./cmd/<x>` run inside resolver/
+/resolver/resolver
+/resolver/ddns
+/resolver/ddns-lookup
+/resolver/ddns-fetch
 
 # Local env & secrets
 .env

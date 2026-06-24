@@ -137,9 +137,16 @@ Open issues to resolve during detailed design:
 
 1. **Pricing model** for namespace registration and renewal — flat fee vs. length-based
    vs. auction. Affects contract storage layout.
+   **Resolved:** length-based — `priceOf` scales the base yearly fee inversely with name
+   length (`NamespaceDApp`), with excess payment refunded.
 2. **Zero-Knowledge Proof scope** — decide whether ZKPs are applied per-response,
    per-domain-state, or whether plain ECDSA signatures are sufficient for the V1
    deliverable.
+   **Resolved:** per-record commitment proofs — each record anchors a MiMC commitment
+   on-chain and the resolver proves (Groth16/BN254) that the payload it serves hashes to
+   it; the client verifies the proof itself. ECDSA owner signatures are enforced too, so
+   the two layers compose. The gnark-exported `ZKVerifier.sol` is deployed as an
+   on-chain-verifiable artifact, though the live verification path is client-side.
 3. **Resource Type Validation strategy** — whether validation runs inside the Resolver
    (via local MIME/content sniffing) or via a trusted external endpoint. Trade-off
    between decentralization purity and practical correctness.
@@ -150,18 +157,33 @@ Open issues to resolve during detailed design:
 4. **Record-type registry** — should new dynamic record types require a governance vote
    (DAO) on-chain, or is a permissionless declaration sufficient with off-chain client
    interpretation?
+   **Resolved:** permissionless declaration (`RecordSchemaRegistry.declareType`, UC-9);
+   clients interpret types off-chain. A DAO gate can layer on later without a schema change.
 5. **Cache invalidation across resolvers** — TTL only, or push-based invalidation when
    the contract emits an `Updated` event? The latter requires a persistent event
    subscription.
+   **Resolved:** both — per-record TTL expiry *plus* push invalidation driven by a
+   persistent chain-event watcher (`WatchRecordEvents` → `cache.HandleEvent`).
 6. **UDP wire format** — adopt a binary format compatible with RFC 1035 framing, or
    define a new compact binary schema (CBOR/Protobuf) optimized for the extended query
    types?
+   **Resolved:** a new compact length-prefixed TLV binary (`"DDNS"` magic + version +
+   status + TLV fields) carrying the extended selectors, wrapping the same signed envelope
+   as REST; see `internal/server/udp.go`.
 7. **Resolver bootstrap** — how does a fresh client discover the address of a trusted
    Resolver in a system with no legacy DNS to lean on? (Hard-coded list vs.
    blockchain-published registry of resolvers.)
+   **Resolved:** a blockchain-published `ResolverRegistry` — operators announce
+   `{ed25519 pubKey, endpoint}` (`ddns announce-resolver`); `ddns-lookup --discover` reads
+   the directory and pins the answering resolver's key. A hard-coded `--resolver` remains
+   for zero-dependency use.
 8. **Sybil resistance for resolvers** — without an incentive layer, what stops a
    malicious party from running many fake resolvers? Mitigated by client-side signature
    verification, but worth documenting.
+   **Resolved (by design):** the registry is a discovery *hint*, not an authority — every
+   client independently verifies the resolver envelope, the owner's record signature
+   (recovered to the on-chain pubKey), and the ZK commitment proof. A fake resolver can
+   forge none of these, so Sybil amplification gains nothing.
 
 ### To-do list & expected timetable
 
@@ -490,10 +512,11 @@ the file. Subsequent users hit the cache for one hour.
 1. **Smart contracts.** `npm install` inside `/contracts`, then
    `npx hardhat compile && npx hardhat run scripts/deploy.ts --network <local|sepolia>`.
    Deployment script writes the contract address to `deployments/<network>.json`.
-2. **Resolver Server (Go).** From `/resolver`, run `go mod download` then
-   `go build -o ddns-resolver ./cmd/resolver`. Copy `.env.example` to `.env` and set
-   `RPC_URL`, `CONTRACT_ADDRESS`, `RESOLVER_KEYSTORE`, `REST_PORT`, `UDP_PORT`,
-   `BT_LISTEN_PORT`. Start with `./ddns-resolver` (or via `docker compose up`).
+2. **Resolver Server (Go).** From `/resolver`, just `go run ./cmd/resolver`. Contract
+   addresses are auto-detected from `contracts/deployments/<network>.json`, and a local
+   `.env` (copied from `.env.example`) is loaded automatically for any overrides (ports,
+   rate limits, `ALLOW_PEER_HINTS`, `ENFORCE_CONTENT_TYPE`, …). Alternatively, bring up the
+   whole stack — chain, deploy, seed, and resolver — with `docker compose up --build`.
 3. **Owner CLI (Go).** Build the `ddns` command from `/resolver/cmd/ddns`. The wallet is
    a go-ethereum keystore or raw private key; for Testnet deployments, the user must hold
    a small balance from a faucet to pay registration gas/fees.
