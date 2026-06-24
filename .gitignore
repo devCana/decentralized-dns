@@ -12,6 +12,8 @@ contracts/deployments/localhost.json
 # Go
 resolver/bin/
 resolver/dist/
+resolver/coverage.out
+resolver/coverage.filtered
 
 # Local env & secrets
 .env

@@ -34,5 +34,17 @@ jobs:
           go-version-file: resolver/go.mod
           cache-dependency-path: resolver/go.sum
       - run: go build ./...
+      - name: gofmt
+        run: |
+          unformatted="$(gofmt -l .)"
+          if [ -n "$unformatted" ]; then
+            echo "These files are not gofmt-clean:"; echo "$unformatted"; exit 1
+          fi
       - run: go vet ./...
-      - run: go test ./...
+      - name: test (race + coverage)
+        run: go test -race -coverpkg=./internal/... -coverprofile=coverage.out ./...
+      - name: coverage summary
+        run: |
+          grep -v 'internal/chain/bindings/' coverage.out > cov.filtered
+          echo "**Resolver logic coverage** (internal/, excludes generated bindings):" >> "$GITHUB_STEP_SUMMARY"
+          go tool cover -func=cov.filtered | tail -1 | tee -a "$GITHUB_STEP_SUMMARY"

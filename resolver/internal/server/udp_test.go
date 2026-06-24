@@ -155,8 +155,8 @@ func TestUDPRateLimited(t *testing.T) {
 func TestDecodeUDPQueryRejectsMalformed(t *testing.T) {
 	good := encodeUDPQuery(query.Query{Name: "example", Type: "A"})
 	cases := map[string][]byte{
-		"too short":           {'D', 'D'},
-		"bad magic":           append([]byte("XXXX"), good[4:]...),
+		"too short":            {'D', 'D'},
+		"bad magic":            append([]byte("XXXX"), good[4:]...),
 		"truncated TLV header": append(append([]byte(nil), udpMagic[:]...), udpVersion, 0, udpTLVName, 0),
 	}
 	// length larger than remaining bytes
