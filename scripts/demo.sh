@@ -82,7 +82,7 @@ export DDNS_PRIVATE_KEY="$ALICE_PK"
 export DDNS_DEPLOYMENTS="$CONTRACTS/deployments/localhost.json"
 export DDNS_RESOLVER="$REST"
 
-step "6/7  resolve + verify seeded records (ddns-lookup)"
+step "6/8  resolve + verify seeded records (ddns-lookup)"
 ddns-lookup example A
 echo
 ddns-lookup example SVC --selector "service=SMTP&transport=TCP&port=25"
@@ -91,6 +91,14 @@ step "6b   owner CLI writes a new record (ddns set) and we resolve it"
 ddns set example MX --ttl 300 host=mail.example priority=10
 echo
 ddns-lookup example MX
+
+step "6c   on-chain resolver discovery (ResolverRegistry — client bootstrap)"
+ddns announce-resolver --endpoint "$REST"
+echo
+ddns resolvers
+echo
+echo "a fresh client discovers the resolver on-chain, pins its key, then verifies:"
+ddns-lookup --discover --rpc "$RPC_URL" example A
 
 step "7/8  publish a static file + fetch it verified over BitTorrent"
 echo '<!doctype html><title>Decentralized DNS</title><h1>served from BitTorrent, verified on-chain</h1>' >"$WORK/site.html"
