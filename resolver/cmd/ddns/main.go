@@ -30,6 +30,7 @@ import (
 
 	"github.com/ethereum/go-ethereum/accounts/abi/bind"
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/common/hexutil"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/ethclient"
@@ -63,6 +64,10 @@ func main() {
 		cmdDeclareType(args)
 	case "publish-resource":
 		cmdPublishResource(args)
+	case "announce-resolver":
+		cmdAnnounceResolver(args)
+	case "resolvers":
+		cmdResolvers(args)
 	case "-h", "--help", "help":
 		usage()
 	default:
@@ -83,6 +88,8 @@ usage:
   ddns renew <name>
   ddns declare-type <name> --mandatory a,b [--optional c,d]
   ddns publish-resource <name> <file> [--selector S] [--ttl N] [--content-type CT]
+  ddns announce-resolver --endpoint URL [--pubkey 0x<64hex>]
+  ddns resolvers
 
 common flags (all subcommands):
   --rpc URL           blockchain RPC (env RPC_URL, default http://127.0.0.1:8545)
@@ -278,6 +285,125 @@ func cmdPublishResource(args []string) {
 	sig2 := make(chan os.Signal, 1)
 	signal.Notify(sig2, os.Interrupt, syscall.SIGTERM)
 	<-sig2
+}
+
+// cmdAnnounceResolver publishes the running resolver into the on-chain
+// ResolverRegistry so fresh clients can discover it (HLD open issue 7). The
+// operator signs with their own wallet; the advertised identity is the
+// resolver's ed25519 public key, fetched from <endpoint>/admin/stats unless
+// given explicitly.
+func cmdAnnounceResolver(args []string) {
+	fs := flag.NewFlagSet("announce-resolver", flag.ExitOnError)
+	co := addCommon(fs)
+	endpoint := fs.String("endpoint", "", "public resolver base URL to advertise (required)")
+	pubFlag := fs.String("pubkey", "", "resolver ed25519 pubkey 0x<64hex> (default: fetched from <endpoint>/admin/stats)")
+	rrFlag := fs.String("resolver-registry", "", "ResolverRegistry address (overrides deployments)")
+	_ = fs.Parse(reorder(args))
+	if *endpoint == "" {
+		fatal(errors.New("announce-resolver: --endpoint is required"))
+	}
+
+	pubHex := *pubFlag
+	if pubHex == "" {
+		pubHex = fetchResolverPubKey(*endpoint)
+	}
+	pk, err := hexutil.Decode(pubHex)
+	fatal(err)
+	if len(pk) != 32 {
+		fatal(fmt.Errorf("resolver pubkey must be 32 bytes, got %d", len(pk)))
+	}
+	var pk32 [32]byte
+	copy(pk32[:], pk)
+
+	rr := resolverRegistryAddr(*co.deployments, *rrFlag)
+	if rr == (common.Address{}) {
+		fatal(errors.New("ResolverRegistry address unknown: set --resolver-registry, --deployments, or RESOLVER_REGISTRY_ADDRESS"))
+	}
+	key := loadKey(*co.key)
+	ctx := context.Background()
+	eth, err := ethclient.DialContext(ctx, *co.rpc)
+	fatal(err)
+	chainID, err := eth.ChainID(ctx)
+	fatal(err)
+	auth, err := bind.NewKeyedTransactorWithChainID(key, chainID)
+	fatal(err)
+	rc, err := bindings.NewResolverRegistry(rr, eth)
+	fatal(err)
+
+	c := &conn{eth: eth, auth: auth, from: crypto.PubkeyToAddress(key.PublicKey)}
+	fmt.Printf("announcing resolver %s at %s (operator %s)\n", pubHex, *endpoint, c.from.Hex())
+	send(c, "announce-resolver", func(o *bind.TransactOpts) (*types.Transaction, error) {
+		return rc.Announce(o, pk32, *endpoint)
+	})
+	fmt.Printf("announced: clients can now discover %s via the ResolverRegistry\n", *endpoint)
+}
+
+// cmdResolvers lists the resolvers currently advertised in the on-chain
+// directory — the discovery side of the bootstrap story. Read-only; no key.
+func cmdResolvers(args []string) {
+	fs := flag.NewFlagSet("resolvers", flag.ExitOnError)
+	co := addCommon(fs)
+	rrFlag := fs.String("resolver-registry", "", "ResolverRegistry address (overrides deployments)")
+	_ = fs.Parse(reorder(args))
+
+	rr := resolverRegistryAddr(*co.deployments, *rrFlag)
+	if rr == (common.Address{}) {
+		fatal(errors.New("ResolverRegistry address unknown: set --resolver-registry, --deployments, or RESOLVER_REGISTRY_ADDRESS"))
+	}
+	eth, err := ethclient.DialContext(context.Background(), *co.rpc)
+	fatal(err)
+	rc, err := bindings.NewResolverRegistry(rr, eth)
+	fatal(err)
+	out, err := rc.ActiveResolvers(callOpts())
+	fatal(err)
+	if len(out.Operators) == 0 {
+		fmt.Println("no resolvers announced yet")
+		return
+	}
+	fmt.Printf("%d active resolver(s):\n", len(out.Operators))
+	for i := range out.Operators {
+		fmt.Printf("  endpoint=%s\n    pubKey=%s\n    operator=%s\n",
+			out.Endpoints[i], hexutil.Encode(out.PubKeys[i][:]), out.Operators[i].Hex())
+	}
+}
+
+// fetchResolverPubKey reads a running resolver's ed25519 identity from its
+// /admin/stats endpoint.
+func fetchResolverPubKey(endpoint string) string {
+	url := strings.TrimRight(endpoint, "/") + "/admin/stats"
+	resp, err := http.Get(url)
+	fatal(err)
+	defer resp.Body.Close()
+	var s struct {
+		Resolver string `json:"resolver"`
+	}
+	fatal(json.NewDecoder(resp.Body).Decode(&s))
+	if s.Resolver == "" {
+		fatal(fmt.Errorf("could not read resolver pubkey from %s", url))
+	}
+	return s.Resolver
+}
+
+// resolverRegistryAddr resolves the ResolverRegistry address from a flag, the
+// deploy artifact, or RESOLVER_REGISTRY_ADDRESS.
+func resolverRegistryAddr(deployments, flagVal string) common.Address {
+	if flagVal != "" {
+		return common.HexToAddress(flagVal)
+	}
+	if deployments != "" {
+		if data, err := os.ReadFile(deployments); err == nil {
+			var d struct {
+				Contracts struct{ ResolverRegistry string } `json:"contracts"`
+			}
+			if json.Unmarshal(data, &d) == nil && d.Contracts.ResolverRegistry != "" {
+				return common.HexToAddress(d.Contracts.ResolverRegistry)
+			}
+		}
+	}
+	if v := os.Getenv("RESOLVER_REGISTRY_ADDRESS"); v != "" {
+		return common.HexToAddress(v)
+	}
+	return common.Address{}
 }
 
 // ------------------------------------------------------------------- plumbing
