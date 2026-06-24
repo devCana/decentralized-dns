@@ -54,9 +54,10 @@ type Engine struct {
 	client *torrent.Client
 	log    *slog.Logger
 
-	mu       sync.Mutex      // guards the retained-torrent bookkeeping
-	retained []metainfo.Hash // FIFO of resources kept seeding
-	retSet   map[metainfo.Hash]bool
+	mu       sync.Mutex             // guards all torrent bookkeeping below
+	pinned   map[metainfo.Hash]bool // torrents that must NOT be auto-dropped (seeded + retained)
+	retained []metainfo.Hash        // FIFO of *fetched* retentions, for LRU eviction
+	inUse    map[metainfo.Hash]int  // in-flight Fetch readers per infohash
 }
 
 // New starts a BitTorrent client. Close the engine to stop seeding.
@@ -77,25 +78,74 @@ func New(cfg Config) (*Engine, error) {
 	if err != nil {
 		return nil, fmt.Errorf("torrent: client: %w", err)
 	}
-	return &Engine{client: client, log: cfg.Logger, retSet: map[metainfo.Hash]bool{}}, nil
+	return &Engine{
+		client: client,
+		log:    cfg.Logger,
+		pinned: map[metainfo.Hash]bool{},
+		inUse:  map[metainfo.Hash]int{},
+	}, nil
+}
+
+// pin marks a torrent as permanently retained (a seeded file): release never
+// drops it, and it is not subject to LRU eviction.
+func (e *Engine) pin(ih metainfo.Hash) {
+	e.mu.Lock()
+	e.pinned[ih] = true
+	e.mu.Unlock()
+}
+
+// acquire records that a Fetch is reading this torrent so it is not dropped
+// out from under it.
+func (e *Engine) acquire(ih metainfo.Hash) {
+	e.mu.Lock()
+	e.inUse[ih]++
+	e.mu.Unlock()
+}
+
+// release ends a Fetch's use of a torrent, dropping it only when nobody else is
+// reading it AND it is not pinned (seeded or retained). The actual Drop runs
+// outside the lock, since Drop takes the torrent client's global lock and
+// blocks on storage close.
+func (e *Engine) release(ih metainfo.Hash) {
+	e.mu.Lock()
+	if e.inUse[ih] > 0 {
+		e.inUse[ih]--
+	}
+	drop := e.inUse[ih] == 0 && !e.pinned[ih]
+	if e.inUse[ih] == 0 {
+		delete(e.inUse, ih)
+	}
+	e.mu.Unlock()
+	if drop {
+		if t, ok := e.client.Torrent(ih); ok {
+			t.Drop()
+		}
+	}
 }
 
 // retain keeps a successfully fetched torrent seeding so future requests for
 // the same resource are served from local storage (and re-seeded into the
-// swarm) instead of re-downloaded. Retention is bounded: past
-// maxRetainedTorrents the oldest resource is dropped.
+// swarm) instead of re-downloaded. Bounded to maxRetainedTorrents by dropping
+// the oldest fetched retention — but never one a Fetch is mid-read (those are
+// left to release() to drop when the last reader finishes). Drops run outside
+// the lock.
 func (e *Engine) retain(ih metainfo.Hash) {
+	var toDrop []metainfo.Hash
 	e.mu.Lock()
-	defer e.mu.Unlock()
-	if e.retSet[ih] {
-		return
+	if !e.pinned[ih] {
+		e.pinned[ih] = true
+		e.retained = append(e.retained, ih)
 	}
-	e.retSet[ih] = true
-	e.retained = append(e.retained, ih)
 	for len(e.retained) > maxRetainedTorrents {
 		old := e.retained[0]
 		e.retained = e.retained[1:]
-		delete(e.retSet, old)
+		delete(e.pinned, old)
+		if e.inUse[old] == 0 {
+			toDrop = append(toDrop, old) // safe to drop now; nobody is reading it
+		}
+	}
+	e.mu.Unlock()
+	for _, old := range toDrop {
 		if t, ok := e.client.Torrent(old); ok {
 			t.Drop()
 		}
@@ -173,6 +223,7 @@ func (e *Engine) SeedFile(ctx context.Context, path string) (infoHash, sha strin
 	case <-ctx.Done():
 		return "", "", fmt.Errorf("torrent: seed metadata for %s: %w", ih.HexString(), ctx.Err())
 	}
+	e.pin(ih) // a seeded file is kept until the engine closes; never auto-dropped
 	infoHash = t.InfoHash().HexString()
 	digest := hex.EncodeToString(h.Sum(nil))
 	e.log.Info("seeding resource", "infoHash", infoHash, "sha256", digest, "bytes", t.Length())
@@ -195,17 +246,18 @@ func (e *Engine) Fetch(ctx context.Context, infoHashHex, expectedSHAHex string, 
 		return nil, fmt.Errorf("torrent: bad expected sha256 %q", expectedSHAHex)
 	}
 
-	t, isNew := e.client.AddTorrentInfoHash(ih)
-	// A newly added torrent is dropped on any failure path; only a verified
-	// fetch flips keep=true and hands it to retain() to stay seeding.
+	t, _ := e.client.AddTorrentInfoHash(ih)
+	// Reference-count this reader so a concurrent fetch of the same infohash (or
+	// an LRU eviction) can never Drop the torrent out from under us. release()
+	// drops it only when this was the last reader and it isn't pinned/retained.
+	e.acquire(ih)
 	keep := false
-	if isNew {
-		defer func() {
-			if !keep {
-				t.Drop()
-			}
-		}()
-	}
+	defer func() {
+		if keep {
+			e.retain(ih) // verified: keep seeding it
+		}
+		e.release(ih)
+	}()
 	for _, p := range peers {
 		host, portStr, err := net.SplitHostPort(p)
 		if err != nil {
@@ -253,10 +305,7 @@ func (e *Engine) Fetch(ctx context.Context, infoHashHex, expectedSHAHex string, 
 		return nil, ErrHashMismatch
 	}
 	e.log.Info("resource fetched and verified", "infoHash", infoHashHex, "bytes", buf.Len())
-	if isNew {
-		e.retain(ih) // keep seeding this verified resource
-		keep = true
-	}
+	keep = true // the deferred retain() keeps this verified resource seeding
 	return buf.Bytes(), nil
 }
 

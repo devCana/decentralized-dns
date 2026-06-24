@@ -1,6 +1,7 @@
 package torrent
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -8,6 +9,8 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -95,6 +98,47 @@ func TestFetchRetainsForLocalReuse(t *testing.T) {
 	}
 	if string(got) != string(payload) {
 		t.Fatalf("payload = %q, want %q", got, payload)
+	}
+}
+
+func TestConcurrentFetchSameInfohash(t *testing.T) {
+	seed := testEngine(t)
+	fetcher := testEngine(t)
+
+	payload := []byte(strings.Repeat("decentralized-dns ", 2000))
+	file := filepath.Join(t.TempDir(), "shared.bin")
+	if err := os.WriteFile(file, payload, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	infoHash, digest, err := seed.SeedFile(context.Background(), file)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Several goroutines fetch the same infohash at once. The refcount must keep
+	// the shared torrent alive until the last reader finishes — no fetch should
+	// have it dropped out from under it.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	const N = 5
+	var wg sync.WaitGroup
+	errs := make([]error, N)
+	for i := 0; i < N; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			got, err := fetcher.Fetch(ctx, infoHash, digest, seed.ListenAddrs())
+			if err == nil && !bytes.Equal(got, payload) {
+				err = errors.New("payload mismatch")
+			}
+			errs[i] = err
+		}(i)
+	}
+	wg.Wait()
+	for i, err := range errs {
+		if err != nil {
+			t.Errorf("concurrent fetch %d failed: %v", i, err)
+		}
 	}
 }
 
