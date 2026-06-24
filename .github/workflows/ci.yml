@@ -29,7 +29,7 @@ jobs:
         working-directory: resolver
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v6
         with:
           go-version-file: resolver/go.mod
           cache-dependency-path: resolver/go.sum
@@ -61,7 +61,7 @@ jobs:
           node-version: 22
           cache: npm
           cache-dependency-path: contracts/package-lock.json
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v6
         with:
           go-version-file: resolver/go.mod
           cache-dependency-path: resolver/go.sum
