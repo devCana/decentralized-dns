@@ -1,0 +1,7 @@
+bin/
+dist/
+data/
+coverage.out
+coverage.filtered
+*.key
+.env

@@ -48,3 +48,64 @@ jobs:
           grep -v 'internal/chain/bindings/' coverage.out > cov.filtered
           echo "**Resolver logic coverage** (internal/, excludes generated bindings):" >> "$GITHUB_STEP_SUMMARY"
           go tool cover -func=cov.filtered | tail -1 | tee -a "$GITHUB_STEP_SUMMARY"
+
+  # Full-stack end-to-end on a real local chain (HLD to-do #11): deploy + seed,
+  # run the chain integration tests, then boot the resolver and exercise the
+  # REST API and the on-chain resolver discovery loop against it.
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: contracts/package-lock.json
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: resolver/go.mod
+          cache-dependency-path: resolver/go.sum
+      - name: install + compile contracts
+        working-directory: contracts
+        run: npm ci && npx hardhat compile
+      - name: start hardhat node
+        working-directory: contracts
+        run: npx hardhat node --hostname 127.0.0.1 >/tmp/chain.log 2>&1 &
+      - name: wait for chain
+        run: |
+          for _ in $(seq 1 60); do
+            curl -fsS -X POST http://127.0.0.1:8545 -H 'content-type: application/json' \
+              --data '{"jsonrpc":"2.0","id":1,"method":"eth_chainId"}' >/dev/null 2>&1 && exit 0
+            sleep 1
+          done
+          echo "hardhat node never came up" >&2; cat /tmp/chain.log; exit 1
+      - name: deploy + seed
+        working-directory: contracts
+        run: |
+          npx hardhat run scripts/deploy.ts --network localhost
+          npx hardhat run scripts/seed.ts --network localhost
+      - name: chain integration tests
+        working-directory: resolver
+        run: |
+          DEP=../contracts/deployments/localhost.json
+          DDNS_TEST_RPC=http://127.0.0.1:8545 \
+          DDNS_TEST_CONTRACT=$(node -pe "require('$DEP').contracts.NamespaceDApp") \
+          DDNS_TEST_REGISTRY=$(node -pe "require('$DEP').contracts.RecordSchemaRegistry") \
+            go test ./internal/chain/ -run Integration -v
+      - name: resolver REST + discovery smoke
+        working-directory: resolver
+        env:
+          DDNS_PRIVATE_KEY: "0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d"
+          DDNS_DEPLOYMENTS: "../contracts/deployments/localhost.json"
+        run: |
+          mkdir -p /tmp/bin
+          go build -o /tmp/bin/ ./cmd/resolver ./cmd/ddns ./cmd/ddns-lookup
+          DEPLOYMENTS=../contracts/deployments/localhost.json \
+          RESOLVER_KEYSTORE=/tmp/r.key DATA_DIR=/tmp/rdata REST_PORT=8080 UDP_PORT=5353 \
+            /tmp/bin/resolver >/tmp/resolver.log 2>&1 &
+          for _ in $(seq 1 60); do curl -fsS http://127.0.0.1:8080/healthz >/dev/null 2>&1 && break; sleep 1; done
+          echo "resolve example A:"
+          curl -fsS 'http://127.0.0.1:8080/resolve?name=example&type=A' | grep -q '"found":true'
+          echo "announce + discover:"
+          /tmp/bin/ddns announce-resolver --endpoint http://127.0.0.1:8080
+          /tmp/bin/ddns-lookup --discover example A

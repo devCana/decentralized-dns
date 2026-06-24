@@ -1,6 +1,11 @@
-# Decentralized DNS — local development / e2e topology (HLD §4.4).
-# Skeleton: the chain service runs a local Hardhat node; resolver and
-# seeder services are added by issue #17.
+# Decentralized DNS — local end-to-end topology (HLD §4.4).
+#
+#   docker compose up --build
+#
+# Brings up a local Hardhat chain, deploys + seeds the contracts, then starts
+# the Go resolver wired to them. The resolver auto-detects the contract
+# addresses from the shared deployments volume, so no manual configuration is
+# needed. Query it at http://localhost:8080 once it is healthy.
 services:
   chain:
     image: node:22-bookworm-slim
@@ -19,3 +24,44 @@ services:
       interval: 5s
       timeout: 5s
       retries: 30
+
+  # One-shot: deploy + seed the contracts against the chain, writing the
+  # addresses to the shared `deployments` volume the resolver reads.
+  deployer:
+    image: node:22-bookworm-slim
+    working_dir: /app
+    depends_on:
+      chain:
+        condition: service_healthy
+    environment:
+      RPC_URL: http://chain:8545
+    volumes:
+      - ./contracts:/app
+      - deployments:/app/deployments
+    command: >
+      sh -c "npm install &&
+             npx hardhat run scripts/deploy.ts --network localhost &&
+             npx hardhat run scripts/seed.ts --network localhost"
+
+  resolver:
+    build:
+      context: ./resolver
+    depends_on:
+      deployer:
+        condition: service_completed_successfully
+    environment:
+      RPC_URL: http://chain:8545
+      DEPLOYMENTS: /deployments/localhost.json
+      DATA_DIR: /home/nonroot/data
+      RESOLVER_KEYSTORE: /home/nonroot/resolver.key
+      REST_PORT: "8080"
+      UDP_PORT: "5353"
+      ALLOW_PEER_HINTS: "true"
+    volumes:
+      - deployments:/deployments:ro
+    ports:
+      - "8080:8080"
+      - "5353:5353/udp"
+
+volumes:
+  deployments:
