@@ -14,6 +14,7 @@ resolver/bin/
 resolver/dist/
 resolver/coverage.out
 resolver/coverage.filtered
+resolver/data/
 
 # Local env & secrets
 .env
