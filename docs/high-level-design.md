@@ -178,8 +178,12 @@ Open issues to resolve during detailed design:
    blockchain-published registry of resolvers.)
    **Resolved:** a blockchain-published `ResolverRegistry` — operators announce
    `{ed25519 pubKey, endpoint}` (`ddns announce-resolver`); `ddns-lookup --discover` reads
-   the directory and pins the answering resolver's key. A hard-coded `--resolver` remains
-   for zero-dependency use.
+   the directory and pins the answering resolver's key. Because that mode is already
+   talking to the chain, it also cross-checks the answer against `NamespaceDApp.resolve`
+   (owner, pubKey, ZK commitment and the full signed record body must match on-chain
+   state, and a "no match" must be corroborated), so the owner-signature and ZK checks
+   are anchored to the chain rather than to resolver-supplied data. A hard-coded
+   `--resolver` remains for zero-dependency use.
 8. **Sybil resistance for resolvers** — without an incentive layer, what stops a
    malicious party from running many fake resolvers? Mitigated by client-side signature
    verification, but worth documenting.

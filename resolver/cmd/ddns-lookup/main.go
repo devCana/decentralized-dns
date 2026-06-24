@@ -4,15 +4,24 @@
 // the response), and the Groth16 record-commitment proof (HLD §4.3, UC-4/UC-5).
 // It never trusts the resolver's own "verified" flags — it re-checks the
 // cryptography itself, which is the whole point of the PKI design.
+//
+// With --discover (which already dials the chain to find the resolver) it
+// additionally CROSS-CHECKS the answer against NamespaceDApp.resolve: the
+// owner, pubKey, ZK commitment and full signed record body must equal on-chain
+// state — closing the gap where the owner-sig and ZK checks would otherwise
+// verify only against resolver-supplied data — and a "no match" must be
+// corroborated by the chain so a resolver cannot silently withhold a record.
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"os"
@@ -62,6 +71,7 @@ func main() {
 	rpc := fs.String("rpc", envOr("RPC_URL", "http://127.0.0.1:8545"), "blockchain RPC URL (for --discover)")
 	deployments := fs.String("deployments", envOr("DDNS_DEPLOYMENTS", "contracts/deployments/localhost.json"), "deploy json (for --discover)")
 	registryFlag := fs.String("resolver-registry", "", "ResolverRegistry address (for --discover)")
+	namespaceFlag := fs.String("namespace", "", "NamespaceDApp address (for the --discover on-chain cross-check)")
 	fs.Usage = func() {
 		fmt.Fprintln(os.Stderr, "usage: ddns-lookup [flags] <name> <type>")
 		fmt.Fprintln(os.Stderr, "\nQueries a resolver and verifies the signed response end-to-end.")
@@ -121,6 +131,11 @@ func main() {
 
 	if !resp.Found {
 		fmt.Printf("result:    NO MATCH (%s)\n", orDefault(resp.Error, "no_match"))
+		// A discovered resolver's "no match" is corroborated against the chain
+		// so it cannot silently withhold a record that actually exists.
+		if *discover {
+			crossCheck(*rpc, *deployments, *namespaceFlag, q, resp)
+		}
 		return
 	}
 
@@ -134,7 +149,14 @@ func main() {
 	}
 	fmt.Printf("owner sig: OK (recovered to on-chain pubKey + owner address)\n")
 
-	// 3. Independently verify the ZK record-commitment proof, if present.
+	// 3. In discover mode, cross-check the resolver's answer against the
+	//    authoritative on-chain record so the owner-sig and ZK checks are
+	//    anchored to chain state, not to resolver-supplied data.
+	if *discover {
+		crossCheck(*rpc, *deployments, *namespaceFlag, q, resp)
+	}
+
+	// 4. Independently verify the ZK record-commitment proof, if present.
 	if resp.ZKProof == "" {
 		fmt.Printf("zk proof:  none (record carries no commitment)\n")
 		return
@@ -188,14 +210,14 @@ func resolverRegistryAddr(deployments, flagVal string) common.Address {
 	return common.Address{}
 }
 
-func verifyOwnerSig(name string, resp resolveResponse) error {
+// recordFromResponse rebuilds the chain.Record the resolver described, decoding
+// the owner signature and (when present) the ZK commitment. The generation is
+// carried through so it is bound into the canonical message exactly as it was
+// signed.
+func recordFromResponse(resp resolveResponse) (chain.Record, error) {
 	sig, err := hexutil.Decode(resp.Record.OwnerSig)
 	if err != nil {
-		return fmt.Errorf("bad ownerSig encoding: %w", err)
-	}
-	pubKey, err := hexutil.Decode(resp.PubKey)
-	if err != nil {
-		return fmt.Errorf("bad pubKey encoding: %w", err)
+		return chain.Record{}, fmt.Errorf("bad ownerSig encoding: %w", err)
 	}
 	rec := chain.Record{
 		Type:       resp.Record.Type,
@@ -203,9 +225,134 @@ func verifyOwnerSig(name string, resp resolveResponse) error {
 		FieldNames: resp.Record.FieldNames,
 		FieldVals:  resp.Record.FieldValues,
 		TTL:        resp.Record.TTL,
+		Generation: resp.Record.Generation,
 		OwnerSig:   sig,
 	}
+	if resp.Record.Commitment != "" {
+		cb, err := hexutil.Decode(resp.Record.Commitment)
+		if err != nil || len(cb) != 32 {
+			return chain.Record{}, errors.New("bad commitment encoding")
+		}
+		copy(rec.Commitment[:], cb)
+	}
+	return rec, nil
+}
+
+func verifyOwnerSig(name string, resp resolveResponse) error {
+	pubKey, err := hexutil.Decode(resp.PubKey)
+	if err != nil {
+		return fmt.Errorf("bad pubKey encoding: %w", err)
+	}
+	rec, err := recordFromResponse(resp)
+	if err != nil {
+		return err
+	}
 	return pki.VerifyOwnerSig(name, rec, common.HexToAddress(resp.Owner), pubKey)
+}
+
+// crossCheck (discover mode) verifies the resolver's answer against the
+// authoritative on-chain record and prints the verdict; it exits non-zero on
+// any mismatch so a lying or record-withholding resolver fails closed.
+func crossCheck(rpc, deployments, nsFlag string, q query.Query, resp resolveResponse) {
+	if err := compareOnChain(rpc, deployments, nsFlag, q, resp); err != nil {
+		fmt.Printf("on-chain:  MISMATCH — %v\n", err)
+		os.Exit(1)
+	}
+	if resp.Found {
+		fmt.Printf("on-chain:  OK (resolver answer matches NamespaceDApp.resolve)\n")
+	} else {
+		fmt.Printf("on-chain:  OK (NamespaceDApp.resolve also returns no record)\n")
+	}
+}
+
+// compareOnChain reads NamespaceDApp.resolve directly and asserts the resolver
+// echoed on-chain truth. For a positive answer every field the owner signature
+// and ZK commitment depend on — owner, pubKey, commitment, ownerSig and the
+// canonical record body — must match; for a "no match" the chain must also
+// hold no live record.
+func compareOnChain(rpc, deployments, nsFlag string, q query.Query, resp resolveResponse) error {
+	ns := namespaceAddr(deployments, nsFlag)
+	if ns == (common.Address{}) {
+		return errors.New("set --namespace, --deployments, or CONTRACT_ADDRESS to enable the on-chain cross-check")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	c, err := chain.Dial(ctx, rpc, ns, common.Address{}, slog.New(slog.DiscardHandler))
+	if err != nil {
+		return err
+	}
+	defer c.Close()
+	onchain, err := c.Resolve(ctx, q.Name, q.Type, q.Selector)
+	if err != nil {
+		return err
+	}
+	return diffAgainstChain(onchain, q, resp)
+}
+
+// diffAgainstChain is the pure comparison between the authoritative on-chain
+// record and the resolver's answer (split from the RPC dial so it is
+// unit-testable). For a positive answer every field the owner signature and ZK
+// commitment depend on — owner, pubKey, commitment, ownerSig and the canonical
+// record body — must match on-chain state; for a "no match" the chain must also
+// hold no live record (otherwise the resolver is withholding one).
+func diffAgainstChain(onchain *chain.ResolveResult, q query.Query, resp resolveResponse) error {
+	if !resp.Found {
+		if onchain.Record.Exists {
+			return fmt.Errorf("resolver returned NO MATCH but NamespaceDApp holds a live %s record", q.Type)
+		}
+		return nil
+	}
+	if !onchain.Record.Exists {
+		return errors.New("resolver returned a record that does not exist on-chain")
+	}
+
+	respRec, err := recordFromResponse(resp)
+	if err != nil {
+		return err
+	}
+	if onchain.Owner != common.HexToAddress(resp.Owner) {
+		return fmt.Errorf("owner mismatch: chain=%s resolver=%s", onchain.Owner.Hex(), resp.Owner)
+	}
+	respPub, err := hexutil.Decode(resp.PubKey)
+	if err != nil {
+		return fmt.Errorf("bad pubKey encoding: %w", err)
+	}
+	if !bytes.Equal(onchain.PubKey, respPub) {
+		return errors.New("pubKey mismatch between chain and resolver")
+	}
+	if onchain.Record.Commitment != respRec.Commitment {
+		return errors.New("commitment mismatch: the ZK proof was checked against a commitment that is not on-chain")
+	}
+	if !bytes.Equal(onchain.Record.OwnerSig, respRec.OwnerSig) {
+		return errors.New("ownerSig mismatch between chain and resolver")
+	}
+	// type, selector, ttl, generation and the field set in one comparison.
+	if !bytes.Equal(pki.RecordMessage(q.Name, onchain.Record), pki.RecordMessage(q.Name, respRec)) {
+		return errors.New("record body mismatch between chain and resolver")
+	}
+	return nil
+}
+
+// namespaceAddr resolves the NamespaceDApp address from a flag, the deploy
+// artifact, or CONTRACT_ADDRESS.
+func namespaceAddr(deployments, flagVal string) common.Address {
+	if flagVal != "" {
+		return common.HexToAddress(flagVal)
+	}
+	if deployments != "" {
+		if data, err := os.ReadFile(deployments); err == nil {
+			var d struct {
+				Contracts struct{ NamespaceDApp string } `json:"contracts"`
+			}
+			if json.Unmarshal(data, &d) == nil && d.Contracts.NamespaceDApp != "" {
+				return common.HexToAddress(d.Contracts.NamespaceDApp)
+			}
+		}
+	}
+	if v := os.Getenv("CONTRACT_ADDRESS"); v != "" {
+		return common.HexToAddress(v)
+	}
+	return common.Address{}
 }
 
 func verifyZK(resp resolveResponse) error {
