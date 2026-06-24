@@ -11,10 +11,12 @@ It does two things:
    which resolves the domain's HTTP `ResourceRef`, verifies it on-chain (owner signature +
    SHA-256 + ZK), and renders it.
 2. **In-browser verification.** The toolbar popup queries `‹resolver›/resolve` and verifies
-   the resolver's **ed25519 envelope signature in the browser** with WebCrypto — proving
-   the answer really came from that resolver identity, not the page. It extracts the exact
-   signed bytes of the response (rather than re-serializing, which would change them) and
-   verifies them directly.
+   the resolver's **ed25519 envelope signature in the browser** with WebCrypto. It extracts
+   the exact signed bytes of the response (rather than re-serializing, which would change
+   them) and verifies them directly. Pin your resolver's public key in the options page and
+   the popup will only show "verified" when the answer is signed by **that** key — so a
+   malicious or MITM'd resolver can't fake a verified result. Record fields from the
+   response are rendered as inert text, never HTML.
 
 ## Install (unpacked)
 
