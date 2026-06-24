@@ -68,6 +68,8 @@ func main() {
 		cmdAnnounceResolver(args)
 	case "resolvers":
 		cmdResolvers(args)
+	case "withdraw":
+		cmdWithdraw(args)
 	case "-h", "--help", "help":
 		usage()
 	default:
@@ -90,6 +92,7 @@ usage:
   ddns publish-resource <name> <file> [--selector S] [--ttl N] [--content-type CT]
   ddns announce-resolver --endpoint URL [--pubkey 0x<64hex>]
   ddns resolvers
+  ddns withdraw [--to ADDR]            (treasurer: withdraw collected fees)
 
 common flags (all subcommands):
   --rpc URL           blockchain RPC (env RPC_URL, default http://127.0.0.1:8545)
@@ -285,6 +288,28 @@ func cmdPublishResource(args []string) {
 	sig2 := make(chan os.Signal, 1)
 	signal.Notify(sig2, os.Interrupt, syscall.SIGTERM)
 	<-sig2
+}
+
+// cmdWithdraw lets the treasurer (the deployer) sweep collected registration
+// and renewal fees out of the NamespaceDApp (UC adjacent to fee collection).
+func cmdWithdraw(args []string) {
+	fs := flag.NewFlagSet("withdraw", flag.ExitOnError)
+	co := addCommon(fs)
+	to := fs.String("to", "", "recipient address (default: the treasurer key's own address)")
+	_ = fs.Parse(reorder(args))
+	c := dial(co, false)
+
+	dest := c.from
+	if *to != "" {
+		if !common.IsHexAddress(*to) {
+			fatal(fmt.Errorf("invalid --to address %q", *to))
+		}
+		dest = common.HexToAddress(*to)
+	}
+	fmt.Printf("withdrawing collected fees to %s (treasurer %s)\n", dest.Hex(), c.from.Hex())
+	send(c, "withdraw", func(o *bind.TransactOpts) (*types.Transaction, error) {
+		return c.dapp.Withdraw(o, dest)
+	})
 }
 
 // cmdAnnounceResolver publishes the running resolver into the on-chain

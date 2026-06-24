@@ -113,7 +113,9 @@ including sequence diagrams for registration, cache hit/miss, and resource fetch
 | UDP query API (secondary) | ✅ | Compact binary TLV wire format |
 | Operator console | ✅ | `/admin` dashboard + `/admin/stats` JSON (cache, chain head, swarm health, identity) |
 | Browser gateway | ✅ | `/web/{name}` renders a verified decentralized site in any browser |
+| On-chain resolver discovery | ✅ | `ResolverRegistry` + `ddns-lookup --discover` (bootstrap with no legacy DNS) |
 | Owner CLI + lookup/fetch client tools | ✅ | `ddns`, `ddns-lookup`, `ddns-fetch` |
+| Containerized deployment | ✅ | Static `CGO_ENABLED=0` image; `docker compose up` for the full stack |
 | Resolver incentive economics | ⛔ | Out of scope (nice-to-have) |
 | Native `ddns://` browser extension | ⛔ | Out of scope (nice-to-have; the `/web` gateway covers the in-browser case) |
 
@@ -125,10 +127,12 @@ decentralized-dns/
 │   ├── contracts/
 │   │   ├── NamespaceDApp.sol          # registry, records, fees, transfer
 │   │   ├── RecordSchemaRegistry.sol   # dynamic record-type schemas
+│   │   ├── ResolverRegistry.sol       # on-chain resolver discovery directory
 │   │   └── ZKVerifier.sol             # gnark-exported Groth16 verifier
 │   ├── scripts/               # deploy, seed, record-signing helper
-│   └── test/                  # Hardhat test suite (34 tests)
+│   └── test/                  # Hardhat test suite
 ├── resolver/                  # Go resolver server + CLIs
+│   ├── Dockerfile             # static CGO_ENABLED=0 image (distroless)
 │   ├── cmd/
 │   │   ├── resolver/          # the resolver daemon
 │   │   ├── ddns/              # domain-owner CLI (register/set/transfer/…)
@@ -147,7 +151,7 @@ decentralized-dns/
 │       └── config/            # environment configuration
 ├── docs/                      # design documentation (Markdown)
 ├── scripts/demo.sh            # one-command end-to-end demo
-├── docker-compose.yml         # local Hardhat chain for development
+├── docker-compose.yml         # full stack: chain + deploy/seed + resolver
 └── Makefile                   # build / test / deploy / demo targets
 ```
 
@@ -169,6 +173,17 @@ This boots a local Hardhat node, deploys the contracts, builds and starts the Go
 resolver, registers a sample domain, seeds a sample file, and runs an end-to-end query —
 the reproducible path for graders and first-time readers.
 
+### Docker (full stack)
+
+```bash
+docker compose up --build
+```
+
+Brings up the chain, deploys + seeds the contracts, and starts the resolver wired to
+them (addresses auto-detected from a shared volume). Query it at `http://localhost:8080`
+once healthy. The resolver image is a single static `CGO_ENABLED=0` binary on
+`distroless` — the ZK proving artifacts are embedded, so nothing else ships with it.
+
 ### Manual setup
 
 ```bash
@@ -188,6 +203,18 @@ go run ./cmd/resolver
 # 3. Query it
 curl 'http://localhost:8080/resolve?name=example&type=A'
 ```
+
+### Deploy to a public testnet (Sepolia)
+
+```bash
+cd contracts
+export SEPOLIA_RPC_URL=https://… SEPOLIA_PRIVATE_KEY=0x…   # funded from a Sepolia faucet
+npx hardhat run scripts/deploy.ts --network sepolia        # writes deployments/sepolia.json
+```
+
+Point the resolver at it with `RPC_URL=$SEPOLIA_RPC_URL` and
+`DEPLOYMENTS=contracts/deployments/sepolia.json`. Unlike the gitignored localhost
+artifact, a public-testnet `deployments/sepolia.json` is safe to commit.
 
 ## Resolver REST API
 
@@ -251,6 +278,9 @@ ddns publish-resource example ./site.html --selector service=HTTP   # seed + anc
 ddns transfer example 0xNEWOWNER --pubkey 0x04...        # hand over ownership (new owner's pubkey)
 ddns renew example                                       # extend the registration
 ddns declare-type GEO --mandatory lat,lon                # declare a new record type
+ddns withdraw                                            # treasurer: sweep collected fees
+ddns announce-resolver --endpoint http://my-resolver:8080  # publish a resolver to the on-chain directory
+ddns resolvers                                           # list resolvers others can discover
 ```
 
 Flags may appear before or after positional arguments.
@@ -264,6 +294,7 @@ the on-chain pubkey, and the Groth16 commitment proof.
 ```bash
 ddns-lookup example A
 ddns-lookup example SVC --selector "service=SMTP&transport=TCP&port=25"
+ddns-lookup --discover example A   # bootstrap: find a resolver on-chain, then pin + verify its key
 ```
 
 ```text

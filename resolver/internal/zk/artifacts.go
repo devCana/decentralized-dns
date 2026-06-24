@@ -13,7 +13,7 @@ import (
 
 // Artifacts are produced by `make zk-setup` (resolver/cmd/zkgen) and
 // committed. The Groth16 setup is a single-party dev ceremony — NOT a
-// production-safe trusted setup; see issue #8 / README.
+// production-safe trusted setup; see the README security model.
 //
 //go:embed all:artifacts
 var artifactsFS embed.FS
