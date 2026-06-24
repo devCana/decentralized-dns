@@ -16,6 +16,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"sync"
 
 	"github.com/anacrolix/torrent"
 	"github.com/anacrolix/torrent/bencode"
@@ -34,6 +35,12 @@ var ErrHashMismatch = errors.New("torrent: content hash does not match expected 
 // ErrTooLarge is returned when the announced torrent exceeds MaxFetchBytes.
 var ErrTooLarge = errors.New("torrent: resource exceeds maximum fetch size")
 
+// maxRetainedTorrents bounds how many fetched resources the resolver keeps
+// seeding (HLD §3.6: the resolver acts as both leech and seeder). Once fetched
+// and verified, a resource stays in the swarm so repeat requests are served
+// locally; the oldest is dropped past this cap.
+const maxRetainedTorrents = 256
+
 // Config tunes an Engine.
 type Config struct {
 	DataDir    string       // where seeded/fetched payloads live
@@ -46,6 +53,10 @@ type Config struct {
 type Engine struct {
 	client *torrent.Client
 	log    *slog.Logger
+
+	mu       sync.Mutex      // guards the retained-torrent bookkeeping
+	retained []metainfo.Hash // FIFO of resources kept seeding
+	retSet   map[metainfo.Hash]bool
 }
 
 // New starts a BitTorrent client. Close the engine to stop seeding.
@@ -66,7 +77,29 @@ func New(cfg Config) (*Engine, error) {
 	if err != nil {
 		return nil, fmt.Errorf("torrent: client: %w", err)
 	}
-	return &Engine{client: client, log: cfg.Logger}, nil
+	return &Engine{client: client, log: cfg.Logger, retSet: map[metainfo.Hash]bool{}}, nil
+}
+
+// retain keeps a successfully fetched torrent seeding so future requests for
+// the same resource are served from local storage (and re-seeded into the
+// swarm) instead of re-downloaded. Retention is bounded: past
+// maxRetainedTorrents the oldest resource is dropped.
+func (e *Engine) retain(ih metainfo.Hash) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.retSet[ih] {
+		return
+	}
+	e.retSet[ih] = true
+	e.retained = append(e.retained, ih)
+	for len(e.retained) > maxRetainedTorrents {
+		old := e.retained[0]
+		e.retained = e.retained[1:]
+		delete(e.retSet, old)
+		if t, ok := e.client.Torrent(old); ok {
+			t.Drop()
+		}
+	}
 }
 
 // Close stops seeding and releases the listen sockets.
@@ -150,7 +183,8 @@ func (e *Engine) SeedFile(ctx context.Context, path string) (infoHash, sha strin
 // payload and compares it to expectedSHAHex before returning it. On any
 // mismatch the data is dropped and ErrHashMismatch returned — tampered
 // content is never served (UC-10). peers lists explicit host:port seeds
-// for networks without DHT; pass nil to rely on DHT discovery.
+// for networks without DHT; pass nil to rely on DHT discovery. A verified
+// resource is retained (kept seeding) so repeat fetches are served locally.
 func (e *Engine) Fetch(ctx context.Context, infoHashHex, expectedSHAHex string, peers []string) ([]byte, error) {
 	var ih metainfo.Hash
 	if err := ih.FromHexString(infoHashHex); err != nil {
@@ -162,8 +196,15 @@ func (e *Engine) Fetch(ctx context.Context, infoHashHex, expectedSHAHex string, 
 	}
 
 	t, isNew := e.client.AddTorrentInfoHash(ih)
+	// A newly added torrent is dropped on any failure path; only a verified
+	// fetch flips keep=true and hands it to retain() to stay seeding.
+	keep := false
 	if isNew {
-		defer t.Drop()
+		defer func() {
+			if !keep {
+				t.Drop()
+			}
+		}()
 	}
 	for _, p := range peers {
 		host, portStr, err := net.SplitHostPort(p)
@@ -212,6 +253,10 @@ func (e *Engine) Fetch(ctx context.Context, infoHashHex, expectedSHAHex string, 
 		return nil, ErrHashMismatch
 	}
 	e.log.Info("resource fetched and verified", "infoHash", infoHashHex, "bytes", buf.Len())
+	if isNew {
+		e.retain(ih) // keep seeding this verified resource
+		keep = true
+	}
 	return buf.Bytes(), nil
 }
 

@@ -60,6 +60,44 @@ func TestSeedAndFetchVerifiesSHA256(t *testing.T) {
 	}
 }
 
+func TestFetchRetainsForLocalReuse(t *testing.T) {
+	seed := testEngine(t)
+	fetcher := testEngine(t)
+
+	payload := []byte("<!doctype html><title>retained</title><h1>served twice</h1>")
+	file := filepath.Join(t.TempDir(), "site.html")
+	if err := os.WriteFile(file, payload, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	infoHash, digest, err := seed.SeedFile(context.Background(), file)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	// First fetch uses the seeder's address as an explicit peer.
+	if _, err := fetcher.Fetch(ctx, infoHash, digest, seed.ListenAddrs()); err != nil {
+		t.Fatalf("first fetch: %v", err)
+	}
+	if got := fetcher.Stats().Torrents; got != 1 {
+		t.Fatalf("retained torrents = %d, want 1", got)
+	}
+
+	// Stop the seeder, then fetch again with NO peers. It must still succeed,
+	// served from the resolver's retained copy — exactly what lets /web serve a
+	// site over DHT-less localhost after the first download.
+	seed.Close()
+	got, err := fetcher.Fetch(ctx, infoHash, digest, nil)
+	if err != nil {
+		t.Fatalf("retained re-fetch: %v", err)
+	}
+	if string(got) != string(payload) {
+		t.Fatalf("payload = %q, want %q", got, payload)
+	}
+}
+
 func TestFetchRejectsTamperedResource(t *testing.T) {
 	seed := testEngine(t)
 	fetcher := testEngine(t)
