@@ -108,11 +108,14 @@ including sequence diagrams for registration, cache hit/miss, and resource fetch
 | Resolver-identity response signatures | ✅ | Every REST/UDP answer sealed in an ed25519 envelope |
 | Zero-knowledge record-commitment proofs | ✅ | gnark MiMC circuit, Groth16, on-chain `ZKVerifier` |
 | BitTorrent `ResourceRef` storage with hash verification | ✅ | Tampered files are discarded, never served |
-| REST query API | ✅ | `/resolve`, `/resource`, `/domains/{name}`, `/types`, `/healthz` |
+| Resource type validation (secondary) | ✅ | Local content sniffing; advisory by default, strict via `ENFORCE_CONTENT_TYPE`; re-checked trustlessly in `ddns-fetch` |
+| REST query API | ✅ | `/resolve`, `/resource`, `/web/{name}`, `/domains/{name}`, `/types`, `/healthz` |
 | UDP query API (secondary) | ✅ | Compact binary TLV wire format |
+| Operator console | ✅ | `/admin` dashboard + `/admin/stats` JSON (cache, chain head, swarm health, identity) |
+| Browser gateway | ✅ | `/web/{name}` renders a verified decentralized site in any browser |
 | Owner CLI + lookup/fetch client tools | ✅ | `ddns`, `ddns-lookup`, `ddns-fetch` |
 | Resolver incentive economics | ⛔ | Out of scope (nice-to-have) |
-| Native browser integration | ⛔ | Out of scope (nice-to-have) |
+| Native `ddns://` browser extension | ⛔ | Out of scope (nice-to-have; the `/web` gateway covers the in-browser case) |
 
 ## Repository layout
 
@@ -195,8 +198,10 @@ re-verified byte-exactly.
 | `GET /healthz` | Liveness + current chain head (exempt from rate limiting) |
 | `GET /resolve?name=&type=&selector=&port=&transport=&service=` | Resolve a single record (UC-4/UC-5) |
 | `GET /resource?name=&selector=&peer=` | Resolve a `ResourceRef` and stream the verified file bytes (UC-6) |
+| `GET /web/{name}?selector=` | Render a verified decentralized site in any browser (defaults to `service=HTTP`) |
 | `GET /domains/{name}` | Raw domain state + all live records |
 | `GET /types` | All declared record types |
+| `GET /admin`, `GET /admin/stats` | Operator console (HTML dashboard + JSON): cache, chain head, swarm health, identity |
 
 **Example**
 
