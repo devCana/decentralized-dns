@@ -155,6 +155,7 @@ func cmdSet(args []string) {
 	rec := chain.Record{
 		Type: recordType, Selector: sel,
 		FieldNames: fieldNames, FieldVals: fieldValues, TTL: uint32(*ttl),
+		Generation: c.generationOf(name),
 	}
 	sig, err := pki.SignRecord(name, rec, c.key)
 	fatal(err)
@@ -279,6 +280,7 @@ func cmdPublishResource(args []string) {
 		FieldNames: []string{"infoHash", "sha256", "contentType"},
 		FieldVals:  []string{infoHash, sha, ct},
 		TTL:        uint32(*ttl),
+		Generation: c.generationOf(name),
 	}
 	sig, err := pki.SignRecord(name, rec, c.key)
 	fatal(err)
@@ -496,6 +498,21 @@ func dial(co commonOpts, needRegistry bool) *conn {
 		fatal(err)
 	}
 	return &conn{eth: eth, dapp: dapp, reg: regc, key: key, auth: auth, from: crypto.PubkeyToAddress(key.PublicKey)}
+}
+
+// generationOf reads the domain's current generation so the owner signature
+// (and ZK commitment) bind to it. The contract stamps each record with the
+// domain generation at write time and only resolves records of the current
+// generation, so signing under a stale generation — or after a transfer /
+// expiry re-registration bumps it — would never verify. Fails fast if the
+// name is not registered.
+func (c *conn) generationOf(name string) uint64 {
+	dom, err := c.dapp.GetDomain(callOpts(), name)
+	fatal(err)
+	if dom.Owner == (common.Address{}) {
+		fatal(fmt.Errorf("domain %q is not registered (run `ddns register %s` first)", name, name))
+	}
+	return dom.Generation
 }
 
 // send submits a transaction and waits for a successful receipt.

@@ -20,12 +20,13 @@ function commitmentOf(
 	type: string,
 	selector: string,
 	ttl: number,
+	generation: bigint,
 	fieldNames: string[],
 	fieldValues: string[],
 ): string {
 	const out = execFileSync("go", ["run", "./cmd/record-commit"], {
 		cwd: path.join(__dirname, "..", "..", "resolver"),
-		input: JSON.stringify({ name, type, selector, ttl, fieldNames, fieldValues }),
+		input: JSON.stringify({ name, type, selector, ttl, generation: Number(generation), fieldNames, fieldValues }),
 	})
 	return out.toString().trim()
 }
@@ -44,6 +45,10 @@ async function main() {
 	await (await dapp.connect(alice).register("example", pubKey, { value: price })).wait()
 	console.log("registered 'example' for", alice.address)
 
+	// Records are signed under (and resolve only at) the domain's current
+	// generation, so bind every signature/commitment to it.
+	const [, , , generation] = await dapp.getDomain("example")
+
 	const set = async (
 		recordType: string,
 		selector: string,
@@ -51,8 +56,8 @@ async function main() {
 		fieldValues: string[],
 		ttl: number,
 	) => {
-		const sig = await signRecord(aliceWallet, "example", recordType, selector, ttl, fieldNames, fieldValues)
-		const commitment = commitmentOf("example", recordType, selector, ttl, fieldNames, fieldValues)
+		const sig = await signRecord(aliceWallet, "example", recordType, selector, ttl, generation, fieldNames, fieldValues)
+		const commitment = commitmentOf("example", recordType, selector, ttl, generation, fieldNames, fieldValues)
 		await (
 			await dapp
 				.connect(alice)

@@ -49,6 +49,7 @@ func testRecord() chain.Record {
 		FieldNames: []string{"target", "service", "transport", "port"},
 		FieldVals:  []string{"mail.example", "SMTP", "TCP", "25"},
 		TTL:        300,
+		Generation: 7,
 		Exists:     true,
 	}
 }
@@ -73,6 +74,14 @@ func TestRecordMessageDeterminism(t *testing.T) {
 	}
 	if bytes.Equal(m1, RecordMessage("other", r)) {
 		t.Error("name change did not alter message")
+	}
+
+	// generation is bound: a record signed under a different generation
+	// (e.g. after a transfer or expiry re-registration) must not collide.
+	r4 := r
+	r4.Generation = r.Generation + 1
+	if bytes.Equal(m1, RecordMessage("example", r4)) {
+		t.Error("generation change did not alter message")
 	}
 }
 
@@ -103,6 +112,14 @@ func TestOwnerSignVerifyRoundTrip(t *testing.T) {
 	bad.FieldVals = []string{"evil.example", "SMTP", "TCP", "25"}
 	if err := VerifyOwnerSig("example", bad, owner, pubKey); err == nil {
 		t.Error("tampered record accepted")
+	}
+
+	// replay across a generation bump: same record + signature, but the
+	// domain has since been transferred/re-registered (generation moved on).
+	stale := r
+	stale.Generation = r.Generation + 1
+	if err := VerifyOwnerSig("example", stale, owner, pubKey); err == nil {
+		t.Error("signature replayed across a generation bump was accepted")
 	}
 
 	// wrong on-chain pubKey

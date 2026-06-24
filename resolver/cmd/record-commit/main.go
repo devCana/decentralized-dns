@@ -6,7 +6,7 @@
 // zk.Commitment directly. Records over zk.MaxPayload print the zero hash
 // (no commitment — proofs are not available for oversized payloads).
 //
-// Input:  {"name","type","selector","ttl","fieldNames","fieldValues"}
+// Input:  {"name","type","selector","ttl","generation","fieldNames","fieldValues"}
 // Output: 0x… (32 bytes)
 package main
 
@@ -28,6 +28,7 @@ type input struct {
 	Type        string   `json:"type"`
 	Selector    string   `json:"selector"`
 	TTL         uint32   `json:"ttl"`
+	Generation  uint64   `json:"generation"`
 	FieldNames  []string `json:"fieldNames"`
 	FieldValues []string `json:"fieldValues"`
 }
@@ -48,6 +49,7 @@ func main() {
 		FieldNames: in.FieldNames,
 		FieldVals:  in.FieldValues,
 		TTL:        in.TTL,
+		Generation: in.Generation,
 	})
 	com, err := zk.Commitment(msg)
 	if errors.Is(err, zk.ErrPayloadTooLarge) {

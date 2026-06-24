@@ -21,13 +21,16 @@ var ErrBadSignature = errors.New("owner signature invalid")
 // RecordMessage builds the canonical bytes owners sign (then wrapped in
 // the EIP-191 personal-sign prefix). Length-prefixed binary keeps any
 // field content unambiguous; field pairs are sorted by name byte order.
-// Mirrored by contracts/scripts/recordSig.ts and the ddns CLI:
+// The domain generation is bound in so a signature made before a transfer
+// or expiry re-registration (both bump the generation) cannot be replayed
+// against the record store afterwards. Mirrored byte-for-byte by
+// contracts/scripts/recordSig.ts and the ddns CLI:
 //
-//	"ddns-record-v1" u16(len)name u16(len)type u16(len)selector
-//	u32(ttl) u16(nFields) { u16(len)name u16(len)value }...
+//	"ddns-record-v2" u16(len)name u16(len)type u16(len)selector
+//	u32(ttl) u64(generation) u16(nFields) { u16(len)name u16(len)value }...
 func RecordMessage(name string, r chain.Record) []byte {
 	var buf bytes.Buffer
-	buf.WriteString("ddns-record-v1")
+	buf.WriteString("ddns-record-v2")
 	writeStr := func(s string) {
 		var l [2]byte
 		binary.BigEndian.PutUint16(l[:], uint16(len(s)))
@@ -40,6 +43,9 @@ func RecordMessage(name string, r chain.Record) []byte {
 	var ttl [4]byte
 	binary.BigEndian.PutUint32(ttl[:], r.TTL)
 	buf.Write(ttl[:])
+	var gen [8]byte
+	binary.BigEndian.PutUint64(gen[:], r.Generation)
+	buf.Write(gen[:])
 
 	type pair struct{ k, v string }
 	pairs := make([]pair, len(r.FieldNames))

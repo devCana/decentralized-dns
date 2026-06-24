@@ -301,7 +301,7 @@ the on-chain pubkey, and the Groth16 commitment proof.
 ```bash
 ddns-lookup example A
 ddns-lookup example SVC --selector "service=SMTP&transport=TCP&port=25"
-ddns-lookup --discover example A   # bootstrap: find a resolver on-chain, then pin + verify its key
+ddns-lookup --discover example A   # bootstrap: find + pin a resolver on-chain, then cross-check its answer against NamespaceDApp.resolve
 ```
 
 ```text
