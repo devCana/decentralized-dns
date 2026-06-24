@@ -44,7 +44,10 @@ The implementation scope covered by this HLD includes:
   mandatory/optional fields to be defined without protocol changes.
 
 Out of scope for this HLD (deferred to "nice-to-have"): the resolver-incentive economic
-model and native browser integration for decentralized web browsing.
+model. Native browser integration, originally deferred, is now provided in a lightweight
+server-side form — a `/web/<name>` gateway that resolves, verifies, and renders a
+decentralized static site in any standard browser without an extension; the full
+`ddns://` protocol-handler/extension remains the deferred nice-to-have.
 
 ### Assumptions and design constraints
 
@@ -140,6 +143,10 @@ Open issues to resolve during detailed design:
 3. **Resource Type Validation strategy** — whether validation runs inside the Resolver
    (via local MIME/content sniffing) or via a trusted external endpoint. Trade-off
    between decentralization purity and practical correctness.
+   **Resolved:** local content sniffing inside the resolver (`internal/contenttype`),
+   so no third party is trusted. It runs at serve time — advisory by default, or
+   rejecting on mismatch under `ENFORCE_CONTENT_TYPE` — and again, fully trustlessly, in
+   `ddns-fetch`, which re-sniffs the bytes against the resolver-signed content type.
 4. **Record-type registry** — should new dynamic record types require a governance vote
    (DAO) on-chain, or is a permissionless declaration sufficient with off-chain client
    interpretation?
@@ -474,8 +481,9 @@ the file. Subsequent users hit the cache for one hour.
 - **Resolver operator console** — a minimal web dashboard at `/admin` showing cache
   stats, current chain head, BitTorrent swarm health, and the resolver's identity public
   key.
-- **Optional browser experience** (nice-to-have, not in V1) — typing `ddns://docs.example`
-  resolves and renders the static site.
+- **Browser experience** — a `/web/<name>` gateway resolves, verifies, and renders a
+  decentralized static site in any standard browser (visit `http://<resolver>/web/example`).
+  The fuller `ddns://docs.example` protocol-handler/extension remains a nice-to-have.
 
 ### Setup
 

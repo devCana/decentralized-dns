@@ -78,6 +78,8 @@ on the blockchain ledger.
 - **Resource Type Validation:** A mechanism ensuring that files uploaded to the P2P
   network (like HTML or JS) match their registered type, potentially utilizing trusted
   verification endpoints.
+  *(Implemented: local content sniffing in the resolver — `internal/contenttype` — chosen
+  over a trusted external endpoint to preserve decentralization; see HLD open issue #3.)*
 
 ### 2.3 Nice-to-have features
 
@@ -88,8 +90,10 @@ on the blockchain ledger.
 - **Decentralized Web Browsing Integration:** Configuring a standard web browser to
   natively resolve and render decentralized static websites through the custom
   infrastructure.
-  *Reason not implemented:* Browser-level HTTP interception and extension development
-  divert focus from the primary blockchain and protocol goals.
+  *Partially implemented:* the resolver now exposes a `/web/<name>` gateway that resolves,
+  verifies, and renders a decentralized site in any standard browser. The remaining piece
+  — a native `ddns://` protocol handler / browser extension — is still deferred, since
+  browser-level HTTP interception diverts focus from the core blockchain and protocol goals.
 
 ## 3. Dependencies
 
