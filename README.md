@@ -116,8 +116,8 @@ including sequence diagrams for registration, cache hit/miss, and resource fetch
 | On-chain resolver discovery | ✅ | `ResolverRegistry` + `ddns-lookup --discover` (bootstrap with no legacy DNS) |
 | Owner CLI + lookup/fetch client tools | ✅ | `ddns`, `ddns-lookup`, `ddns-fetch` |
 | Containerized deployment | ✅ | Static `CGO_ENABLED=0` image; `docker compose up` for the full stack |
-| Resolver incentive economics | ⛔ | Out of scope (nice-to-have) |
-| Native `ddns://` browser extension | ⛔ | Out of scope (nice-to-have; the `/web` gateway covers the in-browser case) |
+| Resolver incentives (pay-per-query) | ✅ | `ResolverIncentives` micropayment channels — exploit-resistant by construction ([model](./docs/incentives.md)) |
+| Browser integration | ✅ | `/web` gateway + a Manifest V3 extension (omnibox `ddns <name>` + in-browser envelope verification) |
 
 ## Repository layout
 
@@ -128,6 +128,7 @@ decentralized-dns/
 │   │   ├── NamespaceDApp.sol          # registry, records, fees, transfer
 │   │   ├── RecordSchemaRegistry.sol   # dynamic record-type schemas
 │   │   ├── ResolverRegistry.sol       # on-chain resolver discovery directory
+│   │   ├── ResolverIncentives.sol     # pay-per-query micropayment channels
 │   │   └── ZKVerifier.sol             # gnark-exported Groth16 verifier
 │   ├── scripts/               # deploy, seed, record-signing helper
 │   └── test/                  # Hardhat test suite
@@ -149,6 +150,7 @@ decentralized-dns/
 │       ├── torrent/           # anacrolix/torrent engine + SHA verification
 │       ├── query/             # query parsing/normalization
 │       └── config/            # environment configuration
+├── extension/                 # Manifest V3 browser extension (omnibox + verify)
 ├── docs/                      # design documentation (Markdown)
 ├── scripts/demo.sh            # one-command end-to-end demo
 ├── docker-compose.yml         # full stack: chain + deploy/seed + resolver
@@ -281,6 +283,11 @@ ddns declare-type GEO --mandatory lat,lon                # declare a new record 
 ddns withdraw                                            # treasurer: sweep collected fees
 ddns announce-resolver --endpoint http://my-resolver:8080  # publish a resolver to the on-chain directory
 ddns resolvers                                           # list resolvers others can discover
+
+# Pay-per-query micropayment channels (docs/incentives.md):
+ddns channel-open --resolver-operator 0xRESOLVER --amount 0.1   # fund a resolver
+ddns voucher --channel 0xID --amount 0.03                       # sign a per-query voucher (client)
+ddns channel-claim --channel 0xID --amount 0.03 --voucher 0x…   # redeem it (resolver operator)
 ```
 
 Flags may appear before or after positional arguments.

@@ -43,11 +43,14 @@ The implementation scope covered by this HLD includes:
   (HTTP/SMTP) selectors, and **dynamic record expansion** allowing new record types with
   mandatory/optional fields to be defined without protocol changes.
 
-Out of scope for this HLD (deferred to "nice-to-have"): the resolver-incentive economic
-model. Native browser integration, originally deferred, is now provided in a lightweight
-server-side form — a `/web/<name>` gateway that resolves, verifies, and renders a
-decentralized static site in any standard browser without an extension; the full
-`ddns://` protocol-handler/extension remains the deferred nice-to-have.
+Both originally-deferred "nice-to-haves" are now addressed. The resolver-incentive model
+is implemented as pay-per-query micropayment channels (`ResolverIncentives`) — clients pay
+for the queries they make, so there is no gameable volume oracle; see
+[incentives.md](./incentives.md). Native browser integration ships in two parts: a
+server-side `/web/<name>` gateway that renders a verified decentralized site in any
+browser, plus a Manifest V3 extension (`extension/`) adding omnibox resolution and
+in-browser envelope verification. These complete the implemented scope; a full tokenomic
+economy and a native `ddns://` OS-level protocol handler remain genuine future work.
 
 ### Assumptions and design constraints
 
