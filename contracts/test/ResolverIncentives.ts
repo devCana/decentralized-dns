@@ -104,7 +104,12 @@ describe("ResolverIncentives", () => {
 		await inc.connect(resolver).claim(id, ethers.parseEther("0.6"), v)
 
 		await expect(inc.connect(client).closeChannel(id)).to.be.revertedWithCustomError(inc, "NotExpired")
+		// Past expiry but within the settlement window: the resolver's grace
+		// period, so the client still cannot close.
 		await time.increase(DAY + 1n)
+		await expect(inc.connect(client).closeChannel(id)).to.be.revertedWithCustomError(inc, "NotExpired")
+		// After the settlement window: client reclaims the unspent remainder.
+		await time.increase(3601n)
 		await expect(inc.connect(client).closeChannel(id)).to.changeEtherBalance(client, ethers.parseEther("0.4"))
 		expect((await inc.channels(id)).client).to.equal(ethers.ZeroAddress) // deleted
 	})

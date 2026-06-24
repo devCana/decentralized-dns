@@ -33,6 +33,7 @@ contract NamespaceDApp {
 
     /// @dev Caps keeping every write-time loop strictly bounded (HLD §2.2).
     uint256 public constant MAX_RECORD_FIELDS = 16;
+    uint256 public constant MAX_FIELD_NAME_LENGTH = 64;
     uint256 public constant MAX_FIELD_VALUE_LENGTH = 1024;
     uint256 public constant MAX_SELECTOR_LENGTH = 256;
 
@@ -108,6 +109,7 @@ contract NamespaceDApp {
     error FieldArrayMismatch();
     error TooManyFields();
     error FieldValueTooLong();
+    error FieldNameTooLong();
     error SelectorTooLong();
     error InvalidTTL();
     error RecordNotFound();
@@ -312,6 +314,9 @@ contract NamespaceDApp {
         if (bytes(selector).length > MAX_SELECTOR_LENGTH) revert SelectorTooLong();
         if (ttl == 0) revert InvalidTTL();
         for (uint256 i = 0; i < fieldValues.length; i++) {
+            if (bytes(fieldNames[i]).length > MAX_FIELD_NAME_LENGTH) {
+                revert FieldNameTooLong();
+            }
             if (bytes(fieldValues[i]).length > MAX_FIELD_VALUE_LENGTH) {
                 revert FieldValueTooLong();
             }

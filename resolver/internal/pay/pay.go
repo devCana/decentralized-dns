@@ -12,12 +12,17 @@ package pay
 
 import (
 	"crypto/ecdsa"
+	"errors"
 	"math/big"
 
 	"github.com/ethereum/go-ethereum/accounts"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/crypto"
 )
+
+// halfN is secp256k1 N/2; signatures with s above it are non-canonical
+// (malleable) and rejected, matching the contract's EIP-2 low-s check.
+var halfN = new(big.Int).Rsh(crypto.S256().Params().N, 1)
 
 // innerHash is keccak256(abi.encode(contract, id, cumulative)).
 func innerHash(contract common.Address, id [32]byte, cumulative *big.Int) []byte {
@@ -47,9 +52,15 @@ func SignVoucher(key *ecdsa.PrivateKey, contract common.Address, id [32]byte, cu
 // RecoverVoucher returns the address that signed a voucher (mirrors the
 // contract's ecrecover), used to validate a voucher before relying on it.
 func RecoverVoucher(contract common.Address, id [32]byte, cumulative *big.Int, sig []byte) (common.Address, error) {
-	s := make([]byte, len(sig))
+	if len(sig) != 65 {
+		return common.Address{}, errors.New("voucher signature must be 65 bytes")
+	}
+	if new(big.Int).SetBytes(sig[32:64]).Cmp(halfN) > 0 {
+		return common.Address{}, errors.New("non-canonical (high-s) voucher signature")
+	}
+	s := make([]byte, 65)
 	copy(s, sig)
-	if len(s) == 65 && s[64] >= 27 {
+	if s[64] >= 27 {
 		s[64] -= 27
 	}
 	pub, err := crypto.SigToPub(Digest(contract, id, cumulative), s)
