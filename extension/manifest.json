@@ -1,0 +1,12 @@
+{
+  "manifest_version": 3,
+  "name": "Decentralized DNS (ddns)",
+  "version": "0.1.0",
+  "description": "Resolve decentralized DNS names: type 'ddns <name>' in the address bar to open the verified site, or use the popup to verify a resolver's signed answer in-browser.",
+  "permissions": ["storage", "tabs"],
+  "host_permissions": ["http://*/*", "https://*/*"],
+  "background": { "service_worker": "background.js" },
+  "action": { "default_popup": "popup.html", "default_title": "ddns lookup" },
+  "options_page": "options.html",
+  "omnibox": { "keyword": "ddns" }
+}

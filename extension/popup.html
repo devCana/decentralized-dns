@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <style>
+      :root { color-scheme: light dark; }
+      body { width: 340px; margin: 0; padding: 12px;
+             font: 13px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; }
+      h1 { font-size: 13px; margin: 0 0 8px; }
+      label { color: #6b7c90; }
+      input, select { width: 100%; box-sizing: border-box; margin: 2px 0 8px;
+                      padding: 5px; font: inherit; }
+      .row { display: flex; gap: 6px; }
+      .row > * { flex: 1; }
+      button { width: 100%; padding: 6px; font: inherit; cursor: pointer; }
+      #out { margin-top: 10px; white-space: pre-wrap; word-break: break-all; }
+      .ok { color: #16a34a; } .bad { color: #dc2626; } .k { color: #6b7c90; }
+      a { font-size: 12px; }
+    </style>
+  </head>
+  <body>
+    <h1>ddns lookup &amp; verify</h1>
+    <label for="name">name</label>
+    <input id="name" placeholder="example" value="example" />
+    <div class="row">
+      <div>
+        <label for="type">type</label>
+        <input id="type" value="A" />
+      </div>
+      <div>
+        <label for="selector">selector</label>
+        <input id="selector" placeholder="service=HTTP" />
+      </div>
+    </div>
+    <button id="go">Resolve &amp; verify</button>
+    <div id="out"></div>
+    <a href="#" id="opts">resolver settings →</a>
+    <script src="popup.js"></script>
+  </body>
+</html>

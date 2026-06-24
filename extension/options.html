@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>ddns settings</title>
+    <style>
+      :root { color-scheme: light dark; }
+      body { max-width: 460px; margin: 2rem auto; padding: 0 1rem;
+             font: 14px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; }
+      h1 { font-size: 16px; }
+      input { width: 100%; box-sizing: border-box; padding: 7px; font: inherit; margin: 6px 0; }
+      button { padding: 7px 14px; font: inherit; cursor: pointer; }
+      .k { color: #6b7c90; }
+      #saved { color: #16a34a; margin-left: 8px; }
+    </style>
+  </head>
+  <body>
+    <h1>Resolver</h1>
+    <p class="k">
+      The trusted resolver this extension talks to. The omnibox opens
+      <code>&lt;resolver&gt;/web/&lt;name&gt;</code>; the popup verifies the resolver's
+      ed25519 signature on every answer. Discover resolver endpoints on-chain with
+      <code>ddns resolvers</code>.
+    </p>
+    <input id="resolver" placeholder="http://localhost:8080" />
+    <div>
+      <button id="save">Save</button>
+      <span id="saved"></span>
+    </div>
+    <script src="options.js"></script>
+  </body>
+</html>
