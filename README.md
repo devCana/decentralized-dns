@@ -382,8 +382,10 @@ See [CONTRIBUTING.md](./CONTRIBUTING.md) for the local dev loop.
 A complete, working decentralized DNS + PKI, built as a university project. Both the
 contracts and the resolver are feature-complete for the implemented scope (every main and
 secondary feature above), with passing test suites on both sides and a verified end-to-end
-`make demo`. The resolver-incentive economic model and native browser integration are
-intentionally out of scope and documented as nice-to-haves.
+`make demo`. The two originally-deferred nice-to-haves have since landed too: resolver
+incentives as pay-per-query micropayment channels (`ResolverIncentives.sol` +
+[docs/incentives.md](./docs/incentives.md)), and browser integration as the `/web`
+gateway plus a Manifest V3 [extension](./extension/).
 
 ## Authors & license
 
