@@ -37,7 +37,7 @@ and a one-command demo.
   (custom TLV framing) for low-latency lookups.
 - **Real systems engineering.** TTL + LRU caching with event-driven invalidation, RPC
   retry/back-off, per-IP rate limiting, graceful shutdown, and a concurrency-tested cache.
-- **Tested & reproducible.** 35 contract tests plus Go unit/concurrency tests (run under
+- **Tested & reproducible.** 49 contract tests plus Go unit/concurrency tests (run under
   `-race`), CI on every push, and `make demo` for a full local end-to-end run.
 
 ## Demo
