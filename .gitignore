@@ -29,3 +29,5 @@ keystore/
 # Editor
 .vscode/
 .idea/
+
+HANDBOOK.*
